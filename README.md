@@ -1,149 +1,152 @@
-# :computer: 超星学习通自动化完成任务点(命令行版)
+# 超星助手桌面版
 
-<p align="center">
-    <a href="https://github.com/Samueli924/chaoxing" target="_blank" style="margin-right: 20px; font-style: normal; text-decoration: none;">
-        <img src="https://img.shields.io/github/stars/Samueli924/chaoxing" alt="Github Stars" />
-    </a>
-    <a href="https://github.com/Samueli924/chaoxing" target="_blank" style="margin-right: 20px; font-style: normal; text-decoration: none;">
-        <img src="https://img.shields.io/github/forks/Samueli924/chaoxing" alt="Github Forks" />
-    </a>
-    <a href="https://github.com/Samueli924/chaoxing" target="_blank" style="margin-right: 20px; font-style: normal; text-decoration: none;">
-        <img src="https://img.shields.io/github/languages/code-size/Samueli924/chaoxing" alt="Code-size" />
-    </a>
-    <a href="https://github.com/Samueli924/chaoxing" target="_blank" style="margin-right: 20px; font-style: normal; text-decoration: none;">
-        <img src="https://img.shields.io/github/v/release/Samueli924/chaoxing?display_name=tag&sort=semver" alt="version" />
-    </a>
-</p>
-:muscle: 本项目的最终目的是通过开源消灭所谓的付费刷课平台，希望有能力的朋友都可以为这个项目提交代码，支持本项目的良性发展
+基于 [Samueli924/chaoxing](https://github.com/Samueli924/chaoxing) 的 fork。
 
-:star: 觉得有帮助的朋友可以给个Star
+这个 fork 主要补的是多账号管理、协同题库、全局凭据、批量启动和桌面控制界面。
 
-## :point_up: 更新通知
-20241021更新通知： 感谢[sz134055](https://github.com/sz134055)提交代码[PR #360](https://github.com/Samueli924/chaoxing/pull/360)，**添加了对题库答题的支持**  
+## 主要特点
 
-## :books: 使用方法
+- 多账号并行隔离：不同配置会自动使用各自独立的 `cookies/cache`，同仓库可以同时跑多个账号。
+- 桌面控制台：基于 `PyQt5 + PyQt-Fluent-Widgets`，支持分页管理、批量启动停止、实时日志查看。
+- JSON 配置：前台使用 `desktop_state/profiles/*.json` 管理配置，不需要在界面里直接折腾 ini。
+- 运行时桥接：启动时会自动生成 `desktop_state/runtime_configs/*.ini`，继续复用原有核心逻辑。
+- 全局设置：Enncy、SiliconFlow、通用 AI、LIKE、TikuAdapter、通知等默认凭据只填一次即可。
+- 多题库协同：支持 `MultiTiku`，例如 `TikuYanxi + SiliconFlow`，答案冲突时会交给仲裁题库再判一次。
+- 课程块选择：刷新课程列表后，可以直接按课程块勾选，不用手填 `courseId`。
+- JSON 高级编辑：默认使用结构化表单，必要时也可以展开 JSON 编辑器直接修改。
 
-### 源码运行（Python 3.13+）
+## 环境要求
 
-1. clone 项目至本地
+- Python `3.13+`
 
-```bash
-git clone --depth=1 https://github.com/Samueli924/chaoxing 
-cd chaoxing
-```
-
-2. 安装依赖
+安装依赖：
 
 ```bash
 pip install -r requirements.txt
 ```
-或使用 `pip install .`（通过 pyproject.toml 安装依赖）
 
-3. (可选直接运行)
-
-```bash
-python main.py
-```
-
-4. (可选配置文件运行)
-
-> 复制config_template.ini文件为config.ini文件，修改文件内的账号密码内容
+或：
 
 ```bash
-python main.py -c config.ini
+pip install .
 ```
 
-5. (可选命令行运行)
+## 启动方式
 
 ```bash
-python main.py -u 手机号 -p 密码 -l 课程ID1,课程ID2,课程ID3...(可选) -a [retry|ask|continue](可选)
+python desktop_app.py
 ```
 
-> Tips:  
-> 如果已安装低版本 Python 推荐使用 `uv` 运行：
+程序内主要有 4 个页面：
+
+- `概览`：查看配置数量、运行状态和数据目录
+- `配置管理`：批量勾选、批量启动停止、结构化编辑配置
+- `全局设置`：集中填写各类默认凭据
+- `运行日志`：一个配置一个日志框，自动排版显示实时输出
+
+## 配置文件位置
+
+```text
+desktop_state/
+  global_settings.json
+  profiles/
+    user1.json
+    user2.json
+  runtime_configs/
+    user1.ini
+    user2.ini
+```
+
+说明：
+
+- `profiles/*.json` 是前台主配置
+- `runtime_configs/*.ini` 是运行时自动生成的桥接配置
+
+## 导入旧 ini
+
+如果你之前已经有：
+
+```text
+profiles/
+  user1.ini
+  user2.ini
+```
+
+桌面端启动后会自动尝试迁移；也可以在 `配置管理` 页面点击 `导入旧 ini`。
+
+## 多题库协同
+
+在 `配置管理` 页面里：
+
+- 主题库下拉框可以指定单题库
+- 协同题库区域可以直接点选多个题库块
+- 勾 1 个时直接使用该题库
+- 勾 2 个以上时自动按 `MultiTiku` 运行
+- 冲突时交给 `decision_provider` 仲裁
+
+常见组合：
+
+- `TikuYanxi + SiliconFlow`
+- `TikuYanxi + AI`
+
+## 全局设置建议
+
+推荐做法：
+
+1. 先去 `全局设置` 填好通用令牌、密钥、接口地址和模型
+2. 单个配置里只填写账号、课程和个别特殊项
+3. 需要单独覆盖时，再在某个配置里填写对应字段
+
+这样就不用在每个配置里重复填写：
+
+- `tokens`
+- `siliconflow_key`
+- `endpoint`
+- `key`
+- `model`
+- `http_proxy`
+- 通知地址 / Telegram 会话 ID
+
+## 批量启动和日志
+
+在 `配置管理` 页面：
+
+- 勾选多个配置
+- 点击 `启动勾选` 或 `停止勾选`
+
+在 `运行日志` 页面：
+
+- 每个配置都有独立卡片
+- 每张卡片都有启动、停止和日志框
+- 终端 ANSI 彩色日志会自动转成普通文本显示
+
+## 命令行入口
+
+原有命令行入口仍然保留：
 
 ```bash
-uv run --python 3.13 main.py
+python main.py -c profiles/user1.ini
 ```
 
-使用配置文件运行 ：
-```bash
-uv run --python 3.13 main.py -c config.ini
-```
-
-### 打包文件运行
-1. 从最新[Releases](https://github.com/Samueli924/chaoxing/releases)中下载exe文件
-2. (可选直接运行) 双击运行即可
-3. (可选配置文件运行) 下载config_template.ini文件保存为config.ini文件，修改文件内的账号密码内容, 执行 `./chaoxing.exe -c config.ini`
-4. (可选命令行运行)`./chaoxing.exe -u "手机号" -p "密码" -l 课程ID1,课程ID2,课程ID3...(可选) -a [retry|ask|continue](可选)`
-
-### Docker运行
-1. 构建Docker镜像
-   ```bash
-   docker build -t chaoxing .
-   ```
-
-2. 运行Docker容器
-   ```bash
-   # 直接运行（将使用默认配置模板）
-   docker run -it chaoxing
-   
-   # 使用自定义配置文件运行
-   docker run -it -v /本地路径/config.ini:/config/config.ini chaoxing
-   ```
-
-3. 配置说明
-   - Docker版本默认使用挂载到 `/config/config.ini` 的配置文件
-   - 首次运行时，会自动将 `config_template.ini` 复制到该位置作为模板
-   - 可以将本地编辑好的配置文件挂载到容器中，按照上述示例命令操作
-
-### 题库配置说明
-
-在你的配置文件中找到`[tiku]`，按照注释填写想要使用的题库名（即`provider`，大小写要一致），并填写必要信息，如token，然后在启动时添加`-c [你的配置文件路径]`即可。
-
-题库会默认使用根目录下的`config.ini`文件中的配置，所以你可以复制配置模板（参照前面的说明）命名为`config.ini`，并只配置题库项`[tiku]`，这样即使你不填写账号之类的信息，不使用`-c`参数指定配置文件，题库也会根据这个配置文件自动配置并启用。
-
-对于那些有章节检测且任务点需要解锁的课程，必须配置题库。
-
-**提交模式与答题**
-不配置题库（既不提供配置文件，也没有放置默认配置文件`config.ini`或填写要使用的题库）视为不使用题库，对于章节检测等需要答题的任务会自动跳过。
-题库覆盖率：搜到的题目占总题目的比例
-提交模式`submit`值为
-
-- `true`：会答完题，达到题库题目覆盖率提交，没达到只保存，**正确率不做保证**。
-- `false`：会答题，但是不会提交，仅保存搜到答案的，随后你可以自行前往学习通查看、修改、提交。**任何填写不正确的`submit`值会被视为`false`**
-
-> 题库名即`answer.py`模块中根据`Tiku`类实现的具体题库类，例如`TikuYanxi`（言溪题库），在填写时，请务必保持大小写一致。
-
-### 已关闭任务点处理配置说明
-
-在配置文件的 `[common]` 部分，可以通过 `notopen_action` 选项配置遇到已关闭任务点时的处理方式:
-
-- `retry` (默认): 遇到关闭的任务点时尝试重新完成上一个任务点，如果连续重试 3 次仍然失败 (或未配置题库及自动提交) 则停止
-- `ask`: 遇到关闭的任务点时询问用户是否继续。选择继续后会自动跳过连续的关闭任务点，直到遇到开放的任务点
-- `continue`: 自动跳过所有关闭的任务点，继续检查和完成后续任务点
-
-也可以通过命令行参数 `-a` 或 `--notopen-action` 指定处理方式，例如：
+或：
 
 ```bash
-python main.py -a ask  # 使用询问模式
+python main.py -u 手机号 -p 密码 -l 课程ID1,课程ID2
 ```
 
-**外部通知配置说明**
+如果你只是想快速批量生成 ini，也还能继续用：
 
-这功能会在所有课程学习任务结束后，或是程序出现错误时，使用外部通知服务推送消息告知你（~~有用但不多~~）
+```bash
+python manage_profiles.py create user1 user2 user3
+```
 
-与题库配置类似，不填写视为不使用，按照注释填写想要使用的外部通知服务（也是`provider`，大小写要一致），并填写必要的`url`
+## 与上游的关系
 
-## :heart: CONTRIBUTORS
+- 上游保留的是命令行刷课主逻辑
+- 本 fork 重点补的是多账号隔离、多题库协同、桌面控制层和 JSON 配置层
 
-![Alt](https://repobeats.axiom.co/api/embed/d3931e84b4b2f17cbe60cafedb38114bdf9931cb.svg "Repobeats analytics image")  
+## 免责声明
 
-<a style="margin-top: 15px" href="https://github.com/Samueli924/chaoxing/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=Samueli924/chaoxing" />
-</a>
-
-## :warning: 免责声明
-- 本代码遵循 [GPL-3.0 License](https://github.com/Samueli924/chaoxing/blob/main/LICENSE) 协议，允许**开源/免费使用和引用/修改/衍生代码的开源/免费使用**，不允许**修改和衍生的代码作为闭源的商业软件发布和销售**，禁止**使用本代码盈利**，以此代码为基础的程序**必须**同样遵守 [GPL-3.0 License](https://github.com/Samueli924/chaoxing/blob/main/LICENSE) 协议
-- 本代码仅用于**学习讨论**，禁止**用于盈利**
-- 他人或组织使用本代码进行的任何**违法行为**与本人无关
+- 本项目遵循 [GPL-3.0 License](LICENSE)
+- 仅用于学习与技术研究，请勿用于盈利或违法用途
+- 使用本项目产生的风险与后果，由使用者自行承担
