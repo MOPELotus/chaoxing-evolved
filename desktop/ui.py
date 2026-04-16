@@ -7,16 +7,13 @@ import sys
 from copy import deepcopy
 from pathlib import Path
 
-from PyQt5.QtCore import QThread, Qt, pyqtSignal
+from PyQt5.QtCore import QSize, QThread, Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QApplication,
     QFrame,
     QGridLayout,
     QHBoxLayout,
-    QInputDialog,
-    QListWidget,
     QListWidgetItem,
-    QMessageBox,
     QScrollArea,
     QSplitter,
     QVBoxLayout,
@@ -36,7 +33,10 @@ with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.St
         InfoBarPosition,
         LargeTitleLabel,
         LineEdit,
+        ListWidget,
         MSFluentWindow,
+        MessageBox,
+        MessageBoxBase,
         NavigationItemPosition,
         PillPushButton,
         PlainTextEdit,
@@ -72,6 +72,12 @@ PROVIDER_OPTIONS = ["TikuYanxi", "SiliconFlow", "AI", "TikuLike", "TikuAdapter",
 COLLAB_PROVIDER_OPTIONS = ["TikuYanxi", "SiliconFlow", "AI", "TikuLike", "TikuAdapter"]
 DECISION_PROVIDER_OPTIONS = ["SiliconFlow", "AI", "TikuYanxi", "TikuLike", "TikuAdapter"]
 NOTOPEN_ACTION_OPTIONS = ["retry", "continue", "ask"]
+NOTOPEN_ACTION_LABELS = {
+    "retry": "重试",
+    "continue": "继续",
+    "ask": "人工确认",
+}
+NOTOPEN_ACTION_VALUE_BY_LABEL = {label: value for value, label in NOTOPEN_ACTION_LABELS.items()}
 NOTIFICATION_PROVIDER_OPTIONS = ["不启用", "ServerChan", "Qmsg", "Bark", "Telegram"]
 STATUS_LABELS = {
     "running": "运行中",
@@ -95,6 +101,18 @@ def set_combo_text(combo: ComboBox, value: str, fallback_index: int = 0) -> None
     combo.setCurrentIndex(index if index >= 0 else fallback_index)
 
 
+def set_notopen_action(combo: ComboBox, value: str) -> None:
+    set_combo_text(combo, NOTOPEN_ACTION_LABELS.get(value, NOTOPEN_ACTION_LABELS["retry"]))
+
+
+def get_notopen_action(combo: ComboBox) -> str:
+    return NOTOPEN_ACTION_VALUE_BY_LABEL.get(combo.currentText().strip(), "retry")
+
+
+def exec_dialog(dialog) -> int:
+    return dialog.exec() if hasattr(dialog, "exec") else dialog.exec_()
+
+
 def show_bar(parent: QWidget, level: str, title: str, content: str, duration: int = 3500) -> None:
     fn = getattr(InfoBar, level, InfoBar.info)
     fn(
@@ -108,8 +126,27 @@ def show_bar(parent: QWidget, level: str, title: str, content: str, duration: in
     )
 
 
+def dialog_parent(parent: QWidget | None) -> QWidget:
+    if parent is not None:
+        return parent.window() if hasattr(parent, "window") else parent
+
+    active_window = QApplication.activeWindow()
+    if active_window is not None:
+        return active_window
+
+    fallback = QWidget()
+    fallback.resize(960, 720)
+    fallback.hide()
+    return fallback
+
+
 def show_error(parent: QWidget, title: str, message: str) -> None:
-    QMessageBox.critical(parent.window() if parent else None, title, message)
+    dialog = MessageBox(title, message, dialog_parent(parent))
+    if hasattr(dialog, "yesButton"):
+        dialog.yesButton.setText("确定")
+    if hasattr(dialog, "cancelButton"):
+        dialog.cancelButton.hide()
+    exec_dialog(dialog)
 
 
 def display_status(status: str) -> str:
@@ -245,6 +282,104 @@ class ChipPanel(QWidget):
             self.selection_changed.emit()
 
 
+class TextInputDialog(MessageBoxBase):
+    def __init__(
+        self,
+        title: str,
+        content: str,
+        placeholder: str,
+        confirm_text: str = "确定",
+        default_value: str = "",
+        parent=None,
+    ) -> None:
+        super().__init__(dialog_parent(parent))
+        self.title_label = SubtitleLabel(title, self)
+        self.content_label = BodyLabel(content, self)
+        self.content_label.setWordWrap(True)
+        self.input_edit = LineEdit(self)
+        self.input_edit.setPlaceholderText(placeholder)
+        self.input_edit.setText(default_value)
+        self.input_edit.returnPressed.connect(self.yesButton.click)
+
+        self.viewLayout.addWidget(self.title_label)
+        self.viewLayout.addWidget(self.content_label)
+        self.viewLayout.addWidget(self.input_edit)
+
+        self.widget.setMinimumWidth(440)
+        self.yesButton.setText(confirm_text)
+        self.cancelButton.setText("取消")
+        self.input_edit.setFocus()
+
+    def value(self) -> str:
+        return self.input_edit.text().strip()
+
+    def validate(self) -> bool:
+        if self.value():
+            return True
+        show_bar(self, "warning", "名称无效", "请输入配置名称。")
+        return False
+
+
+class ProfileListCard(CardWidget):
+    activated = pyqtSignal(str)
+    checked_changed = pyqtSignal(str, bool)
+
+    def __init__(self, profile_name: str, status_text: str, summary_text: str, checked: bool = False, parent=None) -> None:
+        super().__init__(parent)
+        self.profile_name = profile_name
+        self.setObjectName("profileListCard")
+        self.setProperty("active", False)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setStyleSheet(
+            """
+            QWidget#profileListCard[active="true"] {
+                border: 1px solid rgba(0, 120, 212, 0.58);
+                background-color: rgba(0, 120, 212, 0.08);
+            }
+            """
+        )
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(12)
+
+        self.check_box = CheckBox("", self)
+        self.check_box.setChecked(checked)
+        layout.addWidget(self.check_box, 0, Qt.AlignTop)
+
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(4)
+
+        header_row = QHBoxLayout()
+        header_row.setSpacing(8)
+        self.title_label = StrongBodyLabel(profile_name, self)
+        self.status_label = CaptionLabel(status_text, self)
+        header_row.addWidget(self.title_label, 1)
+        header_row.addWidget(self.status_label)
+        text_layout.addLayout(header_row)
+
+        self.summary_label = CaptionLabel(summary_text, self)
+        self.summary_label.setWordWrap(True)
+        text_layout.addWidget(self.summary_label)
+        layout.addLayout(text_layout, 1)
+
+        self.check_box.clicked.connect(self._emit_checked_changed)
+
+    def set_active(self, active: bool) -> None:
+        self.setProperty("active", active)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+
+    def mouseReleaseEvent(self, event) -> None:
+        super().mouseReleaseEvent(event)
+        if event.button() == Qt.LeftButton:
+            self.activated.emit(self.profile_name)
+
+    def _emit_checked_changed(self) -> None:
+        self.checked_changed.emit(self.profile_name, self.check_box.isChecked())
+        self.activated.emit(self.profile_name)
+
 class CourseFetchThread(QThread):
     loaded = pyqtSignal(str, object)
     failed = pyqtSignal(str, str)
@@ -265,19 +400,21 @@ class HomePage(PageFrame):
     def __init__(self, run_manager: RunManager, parent=None) -> None:
         super().__init__(
             "概览",
-            "这里展示当前配置数量、运行状态和数据目录。",
+            "查看配置概况、数据目录与各配置的实时运行日志。",
             parent,
         )
         self.run_manager = run_manager
-        self.run_manager.runs_changed.connect(self.refresh_summary)
+        self.cards: dict[str, LogCard] = {}
+        self.run_manager.runs_changed.connect(self.refresh_dashboard)
+        self.run_manager.log_received.connect(self.on_log_received)
 
-        summary_card = SectionCard("当前状态", parent=self)
+        summary_card = SectionCard("运行概况", parent=self)
         self.summary_label = BodyLabel(self)
         self.summary_label.setWordWrap(True)
         summary_card.body_layout.addWidget(self.summary_label)
         self.root_layout.addWidget(summary_card)
 
-        path_card = SectionCard("数据目录", "程序会把配置、全局设置和运行时配置都放到 desktop_state 下面。", parent=self)
+        path_card = SectionCard("数据目录", "桌面端的配置、全局设置与运行时文件统一保存在 desktop_state 目录。", parent=self)
         self.path_label = BodyLabel(self)
         self.path_label.setWordWrap(True)
         path_card.body_layout.addWidget(self.path_label)
@@ -285,13 +422,33 @@ class HomePage(PageFrame):
 
         refresh_row = QHBoxLayout()
         refresh_row.setSpacing(12)
-        self.refresh_button = PrimaryPushButton("刷新概览", self)
-        self.refresh_button.clicked.connect(self.refresh_summary)
+        self.refresh_button = PrimaryPushButton("刷新状态", self)
+        self.refresh_button.clicked.connect(self.refresh_dashboard)
         refresh_row.addWidget(self.refresh_button)
         refresh_row.addStretch(1)
         self.root_layout.addLayout(refresh_row)
-        self.root_layout.addStretch(1)
+
+        self.empty_label = CaptionLabel("暂无配置。请先在“配置管理”页面创建或导入配置。", self)
+        self.empty_label.setWordWrap(True)
+        self.root_layout.addWidget(self.empty_label)
+
+        self.scroll = QScrollArea(self)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.root_layout.addWidget(self.scroll, 1)
+
+        self.log_host = QWidget(self.scroll)
+        self.log_layout = QVBoxLayout(self.log_host)
+        self.log_layout.setContentsMargins(0, 0, 4, 12)
+        self.log_layout.setSpacing(14)
+        self.scroll.setWidget(self.log_host)
+
+        self.refresh_dashboard()
+
+    def refresh_dashboard(self) -> None:
         self.refresh_summary()
+        self.refresh_cards()
 
     def refresh_summary(self) -> None:
         names = [path.stem for path in list_json_profiles()]
@@ -333,6 +490,58 @@ class HomePage(PageFrame):
             )
         )
 
+    def refresh_cards(self) -> None:
+        names = [path.stem for path in list_json_profiles()]
+        existing_names = set(self.cards)
+
+        for name in sorted(existing_names - set(names)):
+            card = self.cards.pop(name)
+            card.deleteLater()
+
+        for name in names:
+            if name not in self.cards:
+                card = LogCard(name, self.run_manager, self.log_host)
+                card.start_requested.connect(self.start_profile)
+                card.stop_requested.connect(self.stop_profile)
+                self.cards[name] = card
+
+        while self.log_layout.count():
+            item = self.log_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+
+        for name in names:
+            card = self.cards[name]
+            self.log_layout.addWidget(card)
+            card.refresh_card()
+        self.log_layout.addStretch(1)
+
+        self.empty_label.setVisible(not bool(names))
+
+    def start_profile(self, profile_name: str) -> None:
+        try:
+            self.run_manager.start_profile(profile_name)
+        except Exception as exc:
+            show_error(self, "启动失败", str(exc))
+            return
+        self.refresh_dashboard()
+        show_bar(self, "success", "启动成功", f"{profile_name} 已启动。")
+
+    def stop_profile(self, profile_name: str) -> None:
+        try:
+            self.run_manager.stop_profile(profile_name)
+        except Exception as exc:
+            show_error(self, "停止失败", str(exc))
+            return
+        self.refresh_dashboard()
+        show_bar(self, "success", "停止成功", f"{profile_name} 已停止。")
+
+    def on_log_received(self, profile_name: str, line: str) -> None:
+        card = self.cards.get(profile_name)
+        if card:
+            card.append_log(line)
+
 
 class ProfileEditorPanel(QWidget):
     profile_saved = pyqtSignal(str)
@@ -363,7 +572,7 @@ class ProfileEditorPanel(QWidget):
         title_container = QVBoxLayout()
         title_container.setSpacing(4)
         self.profile_title = SubtitleLabel("未选择配置", header)
-        self.profile_state = CaptionLabel("从左侧选择一个配置开始编辑。", header)
+        self.profile_state = CaptionLabel("请选择左侧配置后再进行编辑。", header)
         self.profile_state.setWordWrap(True)
         title_container.addWidget(self.profile_title)
         title_container.addWidget(self.profile_state)
@@ -414,7 +623,7 @@ class ProfileEditorPanel(QWidget):
         return self._dirty
 
     def _build_common_card(self) -> None:
-        self.common_card = SectionCard("通用设置", "账号、登录方式、并发和运行节奏都在这里调。", self.scroll_content)
+        self.common_card = SectionCard("通用设置", "用于配置登录方式、并发参数与运行节奏。", self.scroll_content)
         common_grid = QGridLayout()
         common_grid.setHorizontalSpacing(16)
         common_grid.setVerticalSpacing(12)
@@ -432,18 +641,19 @@ class ProfileEditorPanel(QWidget):
         self.jobs_spin = SpinBox(self.common_card)
         self.jobs_spin.setRange(1, 16)
         self.notopen_combo = ComboBox(self.common_card)
-        self.notopen_combo.addItems(NOTOPEN_ACTION_OPTIONS)
+        for value in NOTOPEN_ACTION_OPTIONS:
+            self.notopen_combo.addItem(NOTOPEN_ACTION_LABELS[value], value)
         self.cookies_path_edit = LineEdit(self.common_card)
-        self.cookies_path_edit.setPlaceholderText("留空则自动使用当前配置独立的 cookies 文件")
+        self.cookies_path_edit.setPlaceholderText("留空时自动使用当前配置的独立 Cookies 文件")
         self.cache_path_edit = LineEdit(self.common_card)
-        self.cache_path_edit.setPlaceholderText("留空则自动使用当前配置独立的缓存文件")
+        self.cache_path_edit.setPlaceholderText("留空时自动使用当前配置的独立缓存文件")
 
         common_grid.addWidget(self.use_cookies_check, 0, 0, 1, 2)
         common_grid.addWidget(make_field("账号", self.username_edit), 1, 0)
         common_grid.addWidget(make_field("密码", self.password_edit), 1, 1)
         common_grid.addWidget(make_field("倍速", self.speed_spin), 2, 0)
         common_grid.addWidget(make_field("并发章节数", self.jobs_spin), 2, 1)
-        common_grid.addWidget(make_field("关闭章节处理", self.notopen_combo), 3, 0)
+        common_grid.addWidget(make_field("关闭章节处理策略", self.notopen_combo), 3, 0)
         common_grid.addWidget(make_field("Cookies 路径", self.cookies_path_edit), 4, 0)
         common_grid.addWidget(make_field("Cache 路径", self.cache_path_edit), 4, 1)
         self.common_card.body_layout.addLayout(common_grid)
@@ -463,7 +673,7 @@ class ProfileEditorPanel(QWidget):
     def _build_tiku_card(self) -> None:
         self.tiku_card = SectionCard(
             "题库与 AI",
-            "空白字段会回退到全局设置。协同题库不再手填字符串，直接点选即可。",
+            "未填写的字段将继承全局设置。协同题库可直接在下方选择。",
             self.scroll_content,
         )
         top_grid = QGridLayout()
@@ -496,9 +706,15 @@ class ProfileEditorPanel(QWidget):
         self.provider_summary = CaptionLabel(self.tiku_card)
         self.provider_summary.setWordWrap(True)
         self.tiku_card.body_layout.addWidget(self.provider_summary)
-        self.provider_chip_panel = ChipPanel("还没有协同题库选项", self.tiku_card)
+        self.provider_chip_panel = ChipPanel("暂无可用的协同题库。", self.tiku_card)
         self.provider_chip_panel.set_items([(item, item) for item in COLLAB_PROVIDER_OPTIONS], [])
-        self.tiku_card.body_layout.addWidget(make_field("协同题库列表", self.provider_chip_panel, "勾 1 个时会直接切到该题库，勾 2 个以上会自动进入 MultiTiku。"))
+        self.tiku_card.body_layout.addWidget(
+            make_field(
+                "协同题库",
+                self.provider_chip_panel,
+                "选择 1 个题库时将直接使用该题库；选择 2 个及以上题库时将自动切换为 MultiTiku。",
+            )
+        )
 
         detail_grid = QGridLayout()
         detail_grid.setHorizontalSpacing(16)
@@ -590,7 +806,7 @@ class ProfileEditorPanel(QWidget):
     def _build_course_card(self) -> None:
         self.course_card = SectionCard(
             "课程选择",
-            "点一下“刷新课程列表”就会按当前配置的账号或 cookies 去请求课程，再直接勾选课程块。",
+            "可根据当前配置的账号或 Cookies 获取课程列表，并以标签形式选择课程。",
             self.scroll_content,
         )
         button_row = QHBoxLayout()
@@ -602,11 +818,11 @@ class ProfileEditorPanel(QWidget):
         button_row.addStretch(1)
         self.course_card.body_layout.addLayout(button_row)
 
-        self.course_status = CaptionLabel("尚未加载课程列表。", self.course_card)
+        self.course_status = CaptionLabel("尚未获取课程列表。", self.course_card)
         self.course_status.setWordWrap(True)
         self.course_card.body_layout.addWidget(self.course_status)
 
-        self.course_chip_panel = ChipPanel("还没拉取课程列表，点上面的刷新按钮即可。", self.course_card)
+        self.course_chip_panel = ChipPanel("尚未获取课程列表。", self.course_card)
         self.course_chip_panel.selection_changed.connect(self._on_course_selection_changed)
         self.course_card.body_layout.addWidget(self.course_chip_panel)
         self.scroll_layout.addWidget(self.course_card)
@@ -615,7 +831,7 @@ class ProfileEditorPanel(QWidget):
         self.clear_courses_button.clicked.connect(self.clear_courses)
 
     def _build_notification_card(self) -> None:
-        self.notification_card = SectionCard("通知", "如果当前配置不需要通知，保留“不启用”即可。", self.scroll_content)
+        self.notification_card = SectionCard("通知", "如无需通知服务，保持“不启用”即可。", self.scroll_content)
         grid = QGridLayout()
         grid.setHorizontalSpacing(16)
         grid.setVerticalSpacing(12)
@@ -638,7 +854,7 @@ class ProfileEditorPanel(QWidget):
         )
 
     def _build_json_card(self) -> None:
-        self.json_card = SectionCard("高级 JSON 编辑", "默认不需要看原始 JSON。需要时再展开直接改，并支持自动格式化。", self.scroll_content)
+        self.json_card = SectionCard("高级 JSON 编辑", "如需直接编辑原始配置，可展开 JSON 编辑器并按格式保存。", self.scroll_content)
         toggle_row = QHBoxLayout()
         toggle_row.setSpacing(12)
         self.toggle_json_button = TransparentPushButton("展开 JSON 编辑器", self.json_card)
@@ -653,7 +869,7 @@ class ProfileEditorPanel(QWidget):
         json_layout.setContentsMargins(0, 0, 0, 0)
         json_layout.setSpacing(10)
         self.json_editor = PlainTextEdit(self.json_editor_container)
-        self.json_editor.setPlaceholderText("这里显示当前配置的 JSON。")
+        self.json_editor.setPlaceholderText("当前配置的 JSON 内容将显示于此。")
         self.json_editor.setMinimumHeight(260)
         json_layout.addWidget(self.json_editor)
 
@@ -742,13 +958,13 @@ class ProfileEditorPanel(QWidget):
         self._loading = True
 
         self.profile_title.setText("未选择配置")
-        self.profile_state.setText("从左侧选择一个配置开始编辑。")
+        self.profile_state.setText("请选择左侧配置后再进行编辑。")
         self.use_cookies_check.setChecked(False)
         self.username_edit.clear()
         self.password_edit.clear()
         self.speed_spin.setValue(1.0)
         self.jobs_spin.setValue(4)
-        set_combo_text(self.notopen_combo, "retry")
+        set_notopen_action(self.notopen_combo, "retry")
         self.cookies_path_edit.clear()
         self.cache_path_edit.clear()
 
@@ -782,8 +998,8 @@ class ProfileEditorPanel(QWidget):
         self.notification_chat_id_edit.clear()
         self.json_editor.clear()
         self.course_chip_panel.set_items([], [])
-        self.course_status.setText("尚未加载课程列表。")
-        self.provider_summary.setText("还没有选择题库。")
+        self.course_status.setText("尚未获取课程列表。")
+        self.provider_summary.setText("尚未指定题库。")
         self._loading = False
         self._set_editor_enabled(False)
 
@@ -809,7 +1025,7 @@ class ProfileEditorPanel(QWidget):
         self.password_edit.setText(str(common.get("password", "")))
         self.speed_spin.setValue(float(common.get("speed", 1.0) or 1.0))
         self.jobs_spin.setValue(int(common.get("jobs", 4) or 4))
-        set_combo_text(self.notopen_combo, str(common.get("notopen_action", "retry") or "retry"))
+        set_notopen_action(self.notopen_combo, str(common.get("notopen_action", "retry") or "retry"))
         self.cookies_path_edit.setText(str(common.get("cookies_path", "")))
         self.cache_path_edit.setText(str(common.get("cache_path", "")))
 
@@ -861,7 +1077,7 @@ class ProfileEditorPanel(QWidget):
 
     def refresh_run_state(self) -> None:
         if not self._current_profile_name:
-            self.profile_state.setText("从左侧选择一个配置开始编辑。")
+            self.profile_state.setText("请选择左侧配置后再进行编辑。")
             self.start_button.setEnabled(False)
             self.stop_button.setEnabled(False)
             return
@@ -885,7 +1101,7 @@ class ProfileEditorPanel(QWidget):
         if not self._current_profile_name:
             return
         self.load_profile(self._current_profile_name)
-        show_bar(self, "success", "已重新载入", f"{self._current_profile_name} 已从磁盘重新载入。")
+        show_bar(self, "success", "重新载入完成", f"{self._current_profile_name} 已从磁盘重新读取。")
 
     def collect_profile_data(self) -> dict:
         if not self._current_profile_name:
@@ -905,7 +1121,7 @@ class ProfileEditorPanel(QWidget):
         common["course_list"] = list(self._selected_course_ids)
         common["speed"] = round(float(self.speed_spin.value()), 2)
         common["jobs"] = int(self.jobs_spin.value())
-        common["notopen_action"] = self.notopen_combo.currentText().strip() or "retry"
+        common["notopen_action"] = get_notopen_action(self.notopen_combo)
 
         selected_providers = self.provider_chip_panel.selected_values()
         provider_value = self.provider_combo.currentText().strip() or "TikuYanxi"
@@ -1004,7 +1220,7 @@ class ProfileEditorPanel(QWidget):
         self._populate_profile(self._current_profile_name, merged)
         self._dirty = True
         self.refresh_run_state()
-        show_bar(self, "success", "JSON 已应用", "JSON 内容已经同步到结构化表单。")
+        show_bar(self, "success", "应用成功", "JSON 内容已同步到结构化表单。")
 
     def save_json_directly(self) -> None:
         if not self._current_profile_name:
@@ -1028,18 +1244,18 @@ class ProfileEditorPanel(QWidget):
         self._dirty = False
         self.load_profile(self._current_profile_name)
         self.profile_saved.emit(self._current_profile_name)
-        show_bar(self, "success", "JSON 已保存", f"{self._current_profile_name} 已按自动排版写回。")
+        show_bar(self, "success", "保存成功", f"{self._current_profile_name} 已按格式写回 JSON 文件。")
 
     def refresh_courses(self) -> None:
         if not self._current_profile_name:
-            show_bar(self, "warning", "没有可刷新的配置", "先从左侧选择一个配置。")
+            show_bar(self, "warning", "未选择配置", "请先从左侧选择一个配置。")
             return
         if self._course_fetch_thread and self._course_fetch_thread.isRunning():
-            show_bar(self, "info", "课程刷新中", "当前配置的课程列表还在请求中。")
+            show_bar(self, "info", "课程列表获取中", "当前配置的课程列表仍在请求中。")
             return
 
         self.refresh_courses_button.setEnabled(False)
-        self.course_status.setText(f"{self._current_profile_name} 课程列表刷新中...")
+        self.course_status.setText(f"正在获取 {self._current_profile_name} 的课程列表...")
         self._course_fetch_thread = CourseFetchThread(self._current_profile_name, self)
         self._course_fetch_thread.loaded.connect(self._on_courses_loaded)
         self._course_fetch_thread.failed.connect(self._on_courses_failed)
@@ -1064,7 +1280,7 @@ class ProfileEditorPanel(QWidget):
             self._selected_course_ids = selected_ids
         self._apply_course_cards(courses)
         self._update_course_summary()
-        show_bar(self, "success", "课程已刷新", f"{profile_name} 共拉取到 {len(courses)} 门课程。")
+        show_bar(self, "success", "课程列表已更新", f"{profile_name} 共获取到 {len(courses)} 门课程。")
 
     def _on_courses_failed(self, profile_name: str, message: str) -> None:
         if profile_name == self._current_profile_name:
@@ -1087,13 +1303,13 @@ class ProfileEditorPanel(QWidget):
     def _update_course_summary(self) -> None:
         if self._courses:
             self._selected_course_ids = self.course_chip_panel.selected_values()
-            self.course_status.setText(f"已选 {len(self._selected_course_ids)} / {len(self._courses)} 门课程。")
+            self.course_status.setText(f"已选择 {len(self._selected_course_ids)} / {len(self._courses)} 门课程。")
             return
         if self._selected_course_ids:
             preview = ", ".join(self._selected_course_ids[:5])
             suffix = " ..." if len(self._selected_course_ids) > 5 else ""
             self.course_status.setText(
-                f"当前 JSON 里保存了 {len(self._selected_course_ids)} 个 courseId：{preview}{suffix}。点“刷新课程列表”后可以改成块选。"
+                f"当前配置已保存 {len(self._selected_course_ids)} 个 courseId：{preview}{suffix}。获取课程列表后可在标签中调整。"
             )
         else:
             self.course_status.setText("尚未选择课程。")
@@ -1130,12 +1346,12 @@ class ProfileEditorPanel(QWidget):
         decision_provider = self.decision_provider_combo.currentText().strip() or "SiliconFlow"
         if len(selected) > 1:
             self.provider_summary.setText(
-                f"当前会按 MultiTiku 运行：{' + '.join(selected)}。答案冲突时交给 {decision_provider} 仲裁。"
+                f"当前将以 MultiTiku 模式运行：{' + '.join(selected)}。答案冲突时由 {decision_provider} 进行复核。"
             )
         elif len(selected) == 1:
-            self.provider_summary.setText(f"当前直接使用：{selected[0]}。")
+            self.provider_summary.setText(f"当前题库：{selected[0]}。")
         else:
-            self.provider_summary.setText(f"当前按主题库运行：{self.provider_combo.currentText().strip() or 'TikuYanxi'}。")
+            self.provider_summary.setText(f"当前题库：{self.provider_combo.currentText().strip() or 'TikuYanxi'}。")
 
     def _mark_dirty(self, *_args) -> None:
         if self._loading or not self._current_profile_name:
@@ -1156,7 +1372,7 @@ class ProfilesPage(PageFrame):
     def __init__(self, run_manager: RunManager, on_profiles_changed=None, parent=None) -> None:
         super().__init__(
             "配置管理",
-            "这里是主编辑页：左边批量勾选和启动，右边用结构化表单编辑 JSON 配置。",
+            "左侧用于配置选择与批量操作，右侧用于编辑 JSON 配置。",
             parent,
         )
         self.run_manager = run_manager
@@ -1165,6 +1381,8 @@ class ProfilesPage(PageFrame):
         self._refreshing_list = False
         self._suspend_selection_load = False
         self.checked_profiles: set[str] = set()
+        self.profile_items: dict[str, QListWidgetItem] = {}
+        self.profile_cards: dict[str, ProfileListCard] = {}
 
         splitter = QSplitter(Qt.Horizontal, self)
         self.root_layout.addWidget(splitter, 1)
@@ -1176,23 +1394,23 @@ class ProfilesPage(PageFrame):
 
         action_row = QHBoxLayout()
         action_row.setSpacing(8)
-        self.import_button = PushButton("导入旧 ini", left_panel)
+        self.import_button = PushButton("导入旧版 INI", left_panel)
         self.create_button = PrimaryPushButton("新建配置", left_panel)
-        self.refresh_button = PushButton("刷新列表", left_panel)
+        self.refresh_button = PushButton("重新载入列表", left_panel)
         action_row.addWidget(self.import_button)
         action_row.addWidget(self.create_button)
         action_row.addWidget(self.refresh_button)
         left_layout.addLayout(action_row)
 
         self.search_edit = SearchLineEdit(left_panel)
-        self.search_edit.setPlaceholderText("筛选配置")
+        self.search_edit.setPlaceholderText("搜索配置")
         left_layout.addWidget(self.search_edit)
 
         select_row = QHBoxLayout()
         select_row.setSpacing(8)
         self.select_all_button = PushButton("全选", left_panel)
         self.invert_button = PushButton("反选", left_panel)
-        self.clear_select_button = PushButton("清空", left_panel)
+        self.clear_select_button = PushButton("清空选择", left_panel)
         select_row.addWidget(self.select_all_button)
         select_row.addWidget(self.invert_button)
         select_row.addWidget(self.clear_select_button)
@@ -1200,18 +1418,20 @@ class ProfilesPage(PageFrame):
 
         run_row = QHBoxLayout()
         run_row.setSpacing(8)
-        self.batch_start_button = PrimaryPushButton("启动勾选", left_panel)
-        self.batch_stop_button = PushButton("停止勾选", left_panel)
+        self.batch_start_button = PrimaryPushButton("启动选中项", left_panel)
+        self.batch_stop_button = PushButton("停止选中项", left_panel)
         run_row.addWidget(self.batch_start_button)
         run_row.addWidget(self.batch_stop_button)
         left_layout.addLayout(run_row)
 
-        self.selection_status = CaptionLabel("当前勾选 0 个配置。", left_panel)
+        self.selection_status = CaptionLabel("已选中 0 个配置。", left_panel)
         self.selection_status.setWordWrap(True)
         left_layout.addWidget(self.selection_status)
 
-        self.profile_list = QListWidget(left_panel)
-        self.profile_list.setAlternatingRowColors(True)
+        self.profile_list = ListWidget(left_panel)
+        self.profile_list.setFrameShape(QFrame.NoFrame)
+        self.profile_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.profile_list.setSpacing(8)
         left_layout.addWidget(self.profile_list, 1)
         splitter.addWidget(left_panel)
 
@@ -1231,7 +1451,6 @@ class ProfilesPage(PageFrame):
         self.batch_start_button.clicked.connect(self.start_checked_profiles)
         self.batch_stop_button.clicked.connect(self.stop_checked_profiles)
         self.profile_list.currentItemChanged.connect(self._on_current_item_changed)
-        self.profile_list.itemChanged.connect(self._on_item_changed)
         self.editor.profile_saved.connect(self._on_profile_saved)
         self.editor.start_requested.connect(self.start_profile)
         self.editor.stop_requested.connect(self.stop_profile)
@@ -1252,37 +1471,56 @@ class ProfilesPage(PageFrame):
 
         self._refreshing_list = True
         self.profile_list.clear()
+        self.profile_items.clear()
+        self.profile_cards.clear()
         for name in visible_names:
-            item = QListWidgetItem(self._display_name(name))
+            item = QListWidgetItem()
             item.setData(Qt.UserRole, name)
-            item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
-            item.setCheckState(Qt.Checked if name in self.checked_profiles else Qt.Unchecked)
+            item.setSizeHint(QSize(0, 86))
             self.profile_list.addItem(item)
+            self.profile_items[name] = item
+
+            card = ProfileListCard(
+                name,
+                self._status_text(name),
+                self._summary_text(name),
+                checked=name in self.checked_profiles,
+                parent=self.profile_list,
+            )
+            card.checked_changed.connect(self._on_profile_card_checked)
+            card.activated.connect(self._on_profile_card_activated)
+            self.profile_list.setItemWidget(item, card)
+            self.profile_cards[name] = card
         self._refreshing_list = False
 
         if visible_names:
             target_name = current_name if current_name in visible_names else visible_names[0]
             self._suspend_selection_load = preserve_current_editor and target_name == self.editor.current_profile_name
-            for index in range(self.profile_list.count()):
-                item = self.profile_list.item(index)
-                if self._item_name(item) == target_name:
-                    self.profile_list.setCurrentRow(index)
-                    break
+            self._set_current_profile(target_name)
             self._suspend_selection_load = False
         elif not names:
             self.editor.clear_profile()
 
+        self._sync_current_card_styles()
         self._update_selection_status()
 
-    def _display_name(self, profile_name: str) -> str:
+    def _status_text(self, profile_name: str) -> str:
         run = self.run_manager.get_run(profile_name)
-        if run and run.status == "running":
-            return f"{profile_name}  [运行中]"
-        if run and run.status != "running":
-            return f"{profile_name}  [{display_status(run.status)}]"
-        return profile_name
+        return display_status(run.status) if run else display_status("idle")
+
+    def _summary_text(self, profile_name: str) -> str:
+        summary = profile_summary(load_json_profile(profile_name))
+        providers = summary.get("providers", []) or []
+        provider_text = " + ".join(providers) if len(providers) > 1 else summary.get("provider", "未配置")
+        return f"题库：{provider_text} | 课程：{summary.get('course_count', 0)}"
+
+    def _set_current_profile(self, profile_name: str) -> None:
+        item = self.profile_items.get(profile_name)
+        if item:
+            self.profile_list.setCurrentItem(item)
 
     def _on_current_item_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
+        self._sync_current_card_styles()
         if self._suspend_selection_load:
             return
         profile_name = self._item_name(current)
@@ -1291,22 +1529,27 @@ class ProfilesPage(PageFrame):
         elif self.profile_list.count() == 0:
             self.editor.clear_profile()
 
-    def _on_item_changed(self, item: QListWidgetItem) -> None:
+    def _on_profile_card_checked(self, profile_name: str, checked: bool) -> None:
         if self._refreshing_list:
             return
-        profile_name = self._item_name(item)
-        if not profile_name:
-            return
-        if item.checkState() == Qt.Checked:
+        if checked:
             self.checked_profiles.add(profile_name)
         else:
             self.checked_profiles.discard(profile_name)
         self._update_selection_status()
 
+    def _on_profile_card_activated(self, profile_name: str) -> None:
+        self._set_current_profile(profile_name)
+
+    def _sync_current_card_styles(self) -> None:
+        current_name = self._item_name(self.profile_list.currentItem())
+        for name, card in self.profile_cards.items():
+            card.set_active(name == current_name)
+
     def _update_selection_status(self) -> None:
         total = len([path.stem for path in list_json_profiles()])
         checked = len(self.checked_profiles)
-        self.selection_status.setText(f"当前勾选 {checked} / {total} 个配置。")
+        self.selection_status.setText(f"已选中 {checked} / {total} 个配置。")
 
     def select_all(self) -> None:
         for path in list_json_profiles():
@@ -1330,27 +1573,34 @@ class ProfilesPage(PageFrame):
         if imported:
             self.refresh_profiles(select_name=imported[0]["name"])
             self._notify_profiles_changed()
-            show_bar(self, "success", "导入完成", f"已迁移 {len(imported)} 个旧版 ini 配置。")
+            show_bar(self, "success", "导入完成", f"已迁移 {len(imported)} 个旧版 INI 配置。")
         else:
-            show_bar(self, "info", "无需导入", "没有发现新的 ini 配置，或者它们已经迁移过。")
+            show_bar(self, "info", "无需导入", "未发现需要迁移的旧版 INI 配置。")
 
     def create_profile(self) -> None:
-        name, accepted = QInputDialog.getText(self, "新建配置", "输入新的配置名称：")
-        if not accepted or not str(name).strip():
+        dialog = TextInputDialog(
+            "新建配置",
+            "请输入配置名称。系统将为该配置创建独立的 JSON 文件和运行状态目录。",
+            "例如：账号A-课程组",
+            confirm_text="创建",
+            parent=self,
+        )
+        if exec_dialog(dialog) != 1:
             return
+        name = dialog.value()
         try:
-            profile = create_json_profile(str(name).strip())
+            profile = create_json_profile(name)
         except Exception as exc:
             show_error(self, "创建失败", str(exc))
             return
         self.refresh_profiles(select_name=profile["name"])
         self._notify_profiles_changed()
-        show_bar(self, "success", "配置已创建", f"{profile['name']} 已创建完成。")
+        show_bar(self, "success", "创建成功", f"{profile['name']} 已创建。")
 
     def start_checked_profiles(self) -> None:
         names = self._checked_names()
         if not names:
-            show_bar(self, "warning", "没有勾选项", "先在左侧列表勾选要启动的配置。")
+            show_bar(self, "warning", "未选择配置", "请先在左侧列表中选择要启动的配置。")
             return
 
         started = 0
@@ -1373,7 +1623,7 @@ class ProfilesPage(PageFrame):
     def stop_checked_profiles(self) -> None:
         names = self._checked_names()
         if not names:
-            show_bar(self, "warning", "没有勾选项", "先在左侧列表勾选要停止的配置。")
+            show_bar(self, "warning", "未选择配置", "请先在左侧列表中选择要停止的配置。")
             return
 
         stopped = 0
@@ -1394,7 +1644,7 @@ class ProfilesPage(PageFrame):
             show_error(self, "启动失败", str(exc))
             return
         self.refresh_run_context()
-        show_bar(self, "success", "已启动", f"{profile_name} 已启动。")
+        show_bar(self, "success", "启动成功", f"{profile_name} 已启动。")
 
     def stop_profile(self, profile_name: str) -> None:
         try:
@@ -1403,7 +1653,7 @@ class ProfilesPage(PageFrame):
             show_error(self, "停止失败", str(exc))
             return
         self.refresh_run_context()
-        show_bar(self, "success", "已停止", f"{profile_name} 已停止。")
+        show_bar(self, "success", "停止成功", f"{profile_name} 已停止。")
 
     def refresh_run_context(self) -> None:
         self.refresh_profiles(
@@ -1425,12 +1675,12 @@ class GlobalSettingsPage(PageFrame):
     def __init__(self, parent=None) -> None:
         super().__init__(
             "全局设置",
-            "全局默认值只需要填一遍。配置里对应字段留空时，会自动回退到这里。",
+            "用于维护题库与通知服务的全局默认值。配置内留空时将自动继承此处设置。",
             parent,
         )
         header_row = QHBoxLayout()
         header_row.setSpacing(12)
-        self.reload_button = PushButton("重新读取", self)
+        self.reload_button = PushButton("重新载入", self)
         self.save_button = PrimaryPushButton("保存全局设置", self)
         header_row.addWidget(self.reload_button)
         header_row.addWidget(self.save_button)
@@ -1458,7 +1708,7 @@ class GlobalSettingsPage(PageFrame):
         self.load_settings()
 
     def _build_tiku_defaults_card(self) -> None:
-        self.tiku_card = SectionCard("题库默认值", "这里放 Enncy、硅基、通用 AI 和 LIKE / Adapter 的全局凭据。", self.scroll.widget())
+        self.tiku_card = SectionCard("题库默认值", "用于维护 Enncy、SiliconFlow、通用 AI 与 Adapter 的全局凭据。", self.scroll.widget())
         grid = QGridLayout()
         grid.setHorizontalSpacing(16)
         grid.setVerticalSpacing(12)
@@ -1510,7 +1760,7 @@ class GlobalSettingsPage(PageFrame):
         self.scroll_layout.addWidget(self.tiku_card)
 
     def _build_notification_defaults_card(self) -> None:
-        self.notification_card = SectionCard("通知默认值", "只有配置自己没填通知设置时才会用这里。", self.scroll.widget())
+        self.notification_card = SectionCard("通知默认值", "仅在配置未单独填写通知参数时使用。", self.scroll.widget())
         grid = QGridLayout()
         grid.setHorizontalSpacing(16)
         grid.setVerticalSpacing(12)
@@ -1583,7 +1833,7 @@ class GlobalSettingsPage(PageFrame):
             }
         )
         save_global_settings(settings)
-        show_bar(self, "success", "全局设置已保存", "空白配置字段现在会自动继承这里的默认值。")
+        show_bar(self, "success", "保存成功", "未填写的配置字段将自动继承当前默认值。")
 
 
 class LogCard(CardWidget):
@@ -1594,8 +1844,6 @@ class LogCard(CardWidget):
         super().__init__(parent)
         self.profile_name = profile_name
         self.run_manager = run_manager
-        self.setMinimumWidth(460)
-        self.setMaximumWidth(520)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 16, 18, 16)
@@ -1618,14 +1866,14 @@ class LogCard(CardWidget):
         button_row.addStretch(1)
         layout.addLayout(button_row)
 
-        self.meta_label = CaptionLabel("等待运行。", self)
+        self.meta_label = CaptionLabel("尚未启动任务。", self)
         self.meta_label.setWordWrap(True)
         layout.addWidget(self.meta_label)
 
         self.log_view = PlainTextEdit(self)
         self.log_view.setReadOnly(True)
         self.log_view.setMinimumHeight(240)
-        self.log_view.setPlaceholderText("启动后这里会显示实时日志。")
+        self.log_view.setPlaceholderText("启动任务后将显示实时日志。")
         layout.addWidget(self.log_view, 1)
 
         self.start_button.clicked.connect(lambda: self.start_requested.emit(self.profile_name))
@@ -1639,7 +1887,7 @@ class LogCard(CardWidget):
             status = display_status(run.status)
             runtime_info = f"运行配置：{run.runtime_config_path}"
             if run.status == "running":
-                runtime_info += " | 正在实时刷新"
+                runtime_info += " | 日志实时刷新中"
         else:
             status = display_status("idle")
             runtime_info = "尚未启动"
@@ -1648,7 +1896,7 @@ class LogCard(CardWidget):
         provider_text = " + ".join(providers) if len(providers) > 1 else summary.get("provider", "未配置")
         self.status_label.setText(status)
         self.meta_label.setText(
-            f"题库：{provider_text}\n课程数：{summary.get('course_count', 0)}\n{runtime_info}"
+            f"题库：{provider_text}\n课程数量：{summary.get('course_count', 0)}\n{runtime_info}"
         )
         self.start_button.setEnabled(status != "running")
         self.stop_button.setEnabled(status == "running")
@@ -1669,96 +1917,6 @@ class LogCard(CardWidget):
         scrollbar.setValue(scrollbar.maximum())
 
 
-class RunsPage(PageFrame):
-    def __init__(self, run_manager: RunManager, parent=None) -> None:
-        super().__init__(
-            "运行日志",
-            "日志页按“一个配置文件一个框”来排版，每个配置都有自己独立的启动、停止和实时日志区域。",
-            parent,
-        )
-        self.run_manager = run_manager
-        self.cards: dict[str, LogCard] = {}
-        self.run_manager.runs_changed.connect(self.refresh_cards)
-        self.run_manager.log_received.connect(self.on_log_received)
-
-        top_row = QHBoxLayout()
-        top_row.setSpacing(12)
-        self.refresh_button = PrimaryPushButton("刷新日志墙", self)
-        top_row.addWidget(self.refresh_button)
-        top_row.addStretch(1)
-        self.root_layout.addLayout(top_row)
-
-        self.empty_label = CaptionLabel("还没有配置。去“配置管理”页创建或导入后，这里会自动长出日志卡片。", self)
-        self.empty_label.setWordWrap(True)
-        self.root_layout.addWidget(self.empty_label)
-
-        self.scroll = QScrollArea(self)
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QFrame.NoFrame)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.root_layout.addWidget(self.scroll, 1)
-
-        self.flow_host = QWidget(self.scroll)
-        self.flow_layout = FlowLayout(self.flow_host)
-        self.flow_layout.setContentsMargins(0, 0, 4, 12)
-        self.flow_layout.setHorizontalSpacing(14)
-        self.flow_layout.setVerticalSpacing(14)
-        self.scroll.setWidget(self.flow_host)
-
-        self.refresh_button.clicked.connect(self.refresh_cards)
-        self.refresh_cards()
-
-    def refresh_cards(self) -> None:
-        names = [path.stem for path in list_json_profiles()]
-        existing_names = set(self.cards)
-
-        for name in sorted(existing_names - set(names)):
-            card = self.cards.pop(name)
-            card.deleteLater()
-
-        for name in names:
-            if name not in self.cards:
-                card = LogCard(name, self.run_manager, self.flow_host)
-                card.start_requested.connect(self.start_profile)
-                card.stop_requested.connect(self.stop_profile)
-                self.cards[name] = card
-
-        while self.flow_layout.count():
-            widget = self.flow_layout.takeAt(0)
-            if widget is not None:
-                widget.setParent(None)
-
-        for name in names:
-            card = self.cards[name]
-            self.flow_layout.addWidget(card)
-            card.refresh_card()
-
-        self.empty_label.setVisible(not bool(names))
-
-    def start_profile(self, profile_name: str) -> None:
-        try:
-            self.run_manager.start_profile(profile_name)
-        except Exception as exc:
-            show_error(self, "启动失败", str(exc))
-            return
-        self.refresh_cards()
-        show_bar(self, "success", "已启动", f"{profile_name} 已启动。")
-
-    def stop_profile(self, profile_name: str) -> None:
-        try:
-            self.run_manager.stop_profile(profile_name)
-        except Exception as exc:
-            show_error(self, "停止失败", str(exc))
-            return
-        self.refresh_cards()
-        show_bar(self, "success", "已停止", f"{profile_name} 已停止。")
-
-    def on_log_received(self, profile_name: str, line: str) -> None:
-        card = self.cards.get(profile_name)
-        if card:
-            card.append_log(line)
-
-
 class DesktopMainWindow(MSFluentWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -1772,24 +1930,20 @@ class DesktopMainWindow(MSFluentWindow):
         self.home_page = HomePage(self.run_manager, self)
         self.profiles_page = ProfilesPage(self.run_manager, self.refresh_profile_dependent_pages, self)
         self.global_settings_page = GlobalSettingsPage(self)
-        self.runs_page = RunsPage(self.run_manager, self)
 
         self.addSubInterface(self.home_page, FluentIcon.HOME, "概览")
         self.addSubInterface(self.profiles_page, FluentIcon.PEOPLE, "配置管理")
-        self.addSubInterface(self.global_settings_page, FluentIcon.SETTING, "全局设置")
         self.addSubInterface(
-            self.runs_page,
-            FluentIcon.PLAY_SOLID,
-            "运行日志",
+            self.global_settings_page,
+            FluentIcon.SETTING,
+            "全局设置",
             position=NavigationItemPosition.BOTTOM,
         )
 
         self.refresh_profile_dependent_pages()
 
     def refresh_profile_dependent_pages(self) -> None:
-        self.home_page.refresh_summary()
-        if hasattr(self, "runs_page"):
-            self.runs_page.refresh_cards()
+        self.home_page.refresh_dashboard()
 
 
 def run_desktop_app() -> int:
