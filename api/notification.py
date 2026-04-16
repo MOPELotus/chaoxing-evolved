@@ -10,6 +10,7 @@ from typing import Dict, Optional
 import requests
 
 from api.logger import logger
+from api.runtime import get_runtime_context
 
 
 class NotificationService(ABC):
@@ -17,8 +18,6 @@ class NotificationService(ABC):
     通知服务基类，定义通知服务的公共接口和实现。
     所有具体的通知服务类应继承此类并实现必要的方法。
     """
-
-    CONFIG_PATH = "config.ini"
 
     def __init__(self):
         """初始化通知服务"""
@@ -46,7 +45,7 @@ class NotificationService(ABC):
         """
         try:
             config = configparser.ConfigParser()
-            config.read(self.CONFIG_PATH, encoding="utf8")
+            config.read(get_runtime_context().config_path, encoding="utf8")
             return config['notification']
         except (KeyError, FileNotFoundError):
             logger.info("未找到notification配置，已忽略外部通知功能")

@@ -1,0 +1,1801 @@
+from __future__ import annotations
+
+import contextlib
+import io
+import json
+import sys
+from copy import deepcopy
+from pathlib import Path
+
+from PyQt5.QtCore import QThread, Qt, pyqtSignal
+from PyQt5.QtWidgets import (
+    QApplication,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QInputDialog,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QScrollArea,
+    QSplitter,
+    QVBoxLayout,
+    QWidget,
+)
+with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+    from qfluentwidgets import (
+        BodyLabel,
+        CaptionLabel,
+        CardWidget,
+        CheckBox,
+        ComboBox,
+        DoubleSpinBox,
+        FluentIcon,
+        FlowLayout,
+        InfoBar,
+        InfoBarPosition,
+        LargeTitleLabel,
+        LineEdit,
+        MSFluentWindow,
+        NavigationItemPosition,
+        PillPushButton,
+        PlainTextEdit,
+        PrimaryPushButton,
+        PushButton,
+        SearchLineEdit,
+        SpinBox,
+        StrongBodyLabel,
+        SubtitleLabel,
+        TransparentPushButton,
+    )
+
+from api.json_store import (
+    DEFAULT_GLOBAL_SETTINGS,
+    DEFAULT_PROFILE,
+    bootstrap_json_profiles_from_legacy,
+    create_json_profile,
+    ensure_desktop_state,
+    list_json_profiles,
+    load_global_settings,
+    load_json_profile,
+    profile_summary,
+    save_global_settings,
+    save_json_profile,
+)
+from desktop.runtime import RunManager, fetch_courses_for_profile
+
+
+APP_TITLE = "超星助手桌面版"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+JSON_PROFILE_DIR = PROJECT_ROOT / "desktop_state" / "profiles"
+PROVIDER_OPTIONS = ["TikuYanxi", "SiliconFlow", "AI", "TikuLike", "TikuAdapter", "MultiTiku"]
+COLLAB_PROVIDER_OPTIONS = ["TikuYanxi", "SiliconFlow", "AI", "TikuLike", "TikuAdapter"]
+DECISION_PROVIDER_OPTIONS = ["SiliconFlow", "AI", "TikuYanxi", "TikuLike", "TikuAdapter"]
+NOTOPEN_ACTION_OPTIONS = ["retry", "continue", "ask"]
+NOTIFICATION_PROVIDER_OPTIONS = ["不启用", "ServerChan", "Qmsg", "Bark", "Telegram"]
+STATUS_LABELS = {
+    "running": "运行中",
+    "completed": "已完成",
+    "failed": "失败",
+    "stopped": "已停止",
+    "idle": "未启动",
+}
+
+
+def split_csv(text: str) -> list[str]:
+    return [item.strip() for item in str(text).replace("\n", ",").split(",") if item.strip()]
+
+
+def join_csv(values: list[str]) -> str:
+    return ",".join(str(item).strip() for item in values if str(item).strip())
+
+
+def set_combo_text(combo: ComboBox, value: str, fallback_index: int = 0) -> None:
+    index = combo.findText(value)
+    combo.setCurrentIndex(index if index >= 0 else fallback_index)
+
+
+def show_bar(parent: QWidget, level: str, title: str, content: str, duration: int = 3500) -> None:
+    fn = getattr(InfoBar, level, InfoBar.info)
+    fn(
+        title=title,
+        content=content,
+        orient=Qt.Horizontal,
+        isClosable=True,
+        position=InfoBarPosition.TOP_RIGHT,
+        duration=duration,
+        parent=parent.window() if parent else None,
+    )
+
+
+def show_error(parent: QWidget, title: str, message: str) -> None:
+    QMessageBox.critical(parent.window() if parent else None, title, message)
+
+
+def display_status(status: str) -> str:
+    return STATUS_LABELS.get(status, status)
+
+
+def make_field(label: str, widget: QWidget, hint: str = "") -> QWidget:
+    container = QWidget()
+    layout = QVBoxLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(6)
+    layout.addWidget(BodyLabel(label, container))
+    if hint:
+        hint_label = CaptionLabel(hint, container)
+        hint_label.setWordWrap(True)
+        layout.addWidget(hint_label)
+    layout.addWidget(widget)
+    return container
+
+
+class PageFrame(QFrame):
+    def __init__(self, title: str, description: str = "", parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName(title.replace(" ", "-"))
+        self.root_layout = QVBoxLayout(self)
+        self.root_layout.setContentsMargins(24, 20, 24, 20)
+        self.root_layout.setSpacing(16)
+
+        self.title_label = LargeTitleLabel(title, self)
+        self.root_layout.addWidget(self.title_label)
+
+        if description:
+            self.description_label = BodyLabel(description, self)
+            self.description_label.setWordWrap(True)
+            self.root_layout.addWidget(self.description_label)
+
+
+class SectionCard(CardWidget):
+    def __init__(self, title: str, description: str = "", parent=None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(14)
+
+        title_label = StrongBodyLabel(title, self)
+        layout.addWidget(title_label)
+        if description:
+            desc_label = CaptionLabel(description, self)
+            desc_label.setWordWrap(True)
+            layout.addWidget(desc_label)
+
+        self.body_layout = QVBoxLayout()
+        self.body_layout.setSpacing(12)
+        layout.addLayout(self.body_layout)
+
+
+class ChipPanel(QWidget):
+    selection_changed = pyqtSignal()
+
+    def __init__(self, empty_text: str = "暂无项目", parent=None) -> None:
+        super().__init__(parent)
+        self._buttons: dict[str, PillPushButton] = {}
+        self._order: list[str] = []
+        self._empty_text = empty_text
+        self._muted = False
+
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self._layout.setSpacing(8)
+
+        self.empty_label = CaptionLabel(empty_text, self)
+        self.empty_label.setWordWrap(True)
+        self._layout.addWidget(self.empty_label)
+
+        self.flow_widget = QWidget(self)
+        self.flow_layout = FlowLayout(self.flow_widget)
+        self.flow_layout.setContentsMargins(0, 0, 0, 0)
+        self.flow_layout.setHorizontalSpacing(8)
+        self.flow_layout.setVerticalSpacing(8)
+        self._layout.addWidget(self.flow_widget)
+        self.flow_widget.hide()
+
+    def _clear_buttons(self) -> None:
+        while self.flow_layout.count():
+            widget = self.flow_layout.takeAt(0)
+            if widget is not None:
+                widget.deleteLater()
+        self._buttons.clear()
+        self._order.clear()
+
+    def set_items(self, items: list[tuple[str, str]], selected: list[str] | set[str] | None = None) -> None:
+        self._muted = True
+        self._clear_buttons()
+        self._order = [value for value, _ in items]
+        selected_values = {str(item) for item in (selected or [])}
+
+        for value, label in items:
+            button = PillPushButton(label, self.flow_widget)
+            button.setCheckable(True)
+            button.setChecked(value in selected_values)
+            button.toggled.connect(self._emit_changed)
+            self.flow_layout.addWidget(button)
+            self._buttons[value] = button
+
+        has_items = bool(items)
+        self.empty_label.setVisible(not has_items)
+        self.flow_widget.setVisible(has_items)
+        if not has_items:
+            self.empty_label.setText(self._empty_text)
+        self._muted = False
+
+    def set_selected(self, values: list[str] | set[str]) -> None:
+        selected_values = {str(item) for item in values}
+        self._muted = True
+        for value, button in self._buttons.items():
+            button.setChecked(value in selected_values)
+        self._muted = False
+        self.selection_changed.emit()
+
+    def selected_values(self) -> list[str]:
+        return [value for value in self._order if value in self._buttons and self._buttons[value].isChecked()]
+
+    def clear_selection(self) -> None:
+        self.set_selected([])
+
+    def set_empty_text(self, text: str) -> None:
+        self._empty_text = text
+        if not self._buttons:
+            self.empty_label.setText(text)
+
+    def _emit_changed(self) -> None:
+        if not self._muted:
+            self.selection_changed.emit()
+
+
+class CourseFetchThread(QThread):
+    loaded = pyqtSignal(str, object)
+    failed = pyqtSignal(str, str)
+
+    def __init__(self, profile_name: str, parent=None) -> None:
+        super().__init__(parent)
+        self.profile_name = profile_name
+
+    def run(self) -> None:
+        try:
+            courses = fetch_courses_for_profile(self.profile_name)
+            self.loaded.emit(self.profile_name, courses)
+        except Exception as exc:
+            self.failed.emit(self.profile_name, str(exc))
+
+
+class HomePage(PageFrame):
+    def __init__(self, run_manager: RunManager, parent=None) -> None:
+        super().__init__(
+            "概览",
+            "这里展示当前配置数量、运行状态和数据目录。",
+            parent,
+        )
+        self.run_manager = run_manager
+        self.run_manager.runs_changed.connect(self.refresh_summary)
+
+        summary_card = SectionCard("当前状态", parent=self)
+        self.summary_label = BodyLabel(self)
+        self.summary_label.setWordWrap(True)
+        summary_card.body_layout.addWidget(self.summary_label)
+        self.root_layout.addWidget(summary_card)
+
+        path_card = SectionCard("数据目录", "程序会把配置、全局设置和运行时配置都放到 desktop_state 下面。", parent=self)
+        self.path_label = BodyLabel(self)
+        self.path_label.setWordWrap(True)
+        path_card.body_layout.addWidget(self.path_label)
+        self.root_layout.addWidget(path_card)
+
+        refresh_row = QHBoxLayout()
+        refresh_row.setSpacing(12)
+        self.refresh_button = PrimaryPushButton("刷新概览", self)
+        self.refresh_button.clicked.connect(self.refresh_summary)
+        refresh_row.addWidget(self.refresh_button)
+        refresh_row.addStretch(1)
+        self.root_layout.addLayout(refresh_row)
+        self.root_layout.addStretch(1)
+        self.refresh_summary()
+
+    def refresh_summary(self) -> None:
+        names = [path.stem for path in list_json_profiles()]
+        runs = self.run_manager.list_runs()
+        running_count = sum(1 for run in runs if run.status == "running")
+        finished_count = sum(1 for run in runs if run.status == "completed")
+        failed_count = sum(1 for run in runs if run.status in {"failed", "stopped"})
+        providers: dict[str, int] = {}
+
+        for name in names:
+            profile = load_json_profile(name)
+            provider = profile.get("tiku", {}).get("provider", "未配置") or "未配置"
+            providers[provider] = providers.get(provider, 0) + 1
+
+        provider_lines = "\n".join(f"- {provider}: {count}" for provider, count in sorted(providers.items()))
+        if not provider_lines:
+            provider_lines = "- 暂无配置"
+
+        self.summary_label.setText(
+            "\n".join(
+                [
+                    f"配置数量：{len(names)}",
+                    f"正在运行：{running_count}",
+                    f"最近完成：{finished_count}",
+                    f"停止或失败：{failed_count}",
+                    "",
+                    "题库分布：",
+                    provider_lines,
+                ]
+            )
+        )
+        self.path_label.setText(
+            "\n".join(
+                [
+                    f"配置目录：{JSON_PROFILE_DIR}",
+                    f"全局设置：{PROJECT_ROOT / 'desktop_state' / 'global_settings.json'}",
+                    f"运行配置：{PROJECT_ROOT / 'desktop_state' / 'runtime_configs'}",
+                ]
+            )
+        )
+
+
+class ProfileEditorPanel(QWidget):
+    profile_saved = pyqtSignal(str)
+    start_requested = pyqtSignal(str)
+    stop_requested = pyqtSignal(str)
+
+    def __init__(self, run_manager: RunManager, parent=None) -> None:
+        super().__init__(parent)
+        self.run_manager = run_manager
+        self._loading = False
+        self._dirty = False
+        self._current_profile_name: str | None = None
+        self._profile_source = deepcopy(DEFAULT_PROFILE)
+        self._course_cache: dict[str, list[dict]] = {}
+        self._courses: list[dict] = []
+        self._selected_course_ids: list[str] = []
+        self._course_fetch_thread: CourseFetchThread | None = None
+
+        self.root_layout = QVBoxLayout(self)
+        self.root_layout.setContentsMargins(0, 0, 0, 0)
+        self.root_layout.setSpacing(12)
+
+        header = QWidget(self)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(12)
+
+        title_container = QVBoxLayout()
+        title_container.setSpacing(4)
+        self.profile_title = SubtitleLabel("未选择配置", header)
+        self.profile_state = CaptionLabel("从左侧选择一个配置开始编辑。", header)
+        self.profile_state.setWordWrap(True)
+        title_container.addWidget(self.profile_title)
+        title_container.addWidget(self.profile_state)
+        header_layout.addLayout(title_container, 1)
+
+        self.reload_button = PushButton("重新载入", header)
+        self.save_button = PrimaryPushButton("保存配置", header)
+        self.start_button = PushButton("启动当前", header)
+        self.stop_button = PushButton("停止当前", header)
+        header_layout.addWidget(self.reload_button)
+        header_layout.addWidget(self.save_button)
+        header_layout.addWidget(self.start_button)
+        header_layout.addWidget(self.stop_button)
+        self.root_layout.addWidget(header)
+
+        self.scroll = QScrollArea(self)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.root_layout.addWidget(self.scroll, 1)
+
+        self.scroll_content = QWidget(self.scroll)
+        self.scroll_layout = QVBoxLayout(self.scroll_content)
+        self.scroll_layout.setContentsMargins(0, 0, 4, 12)
+        self.scroll_layout.setSpacing(16)
+        self.scroll.setWidget(self.scroll_content)
+
+        self._build_common_card()
+        self._build_tiku_card()
+        self._build_course_card()
+        self._build_notification_card()
+        self._build_json_card()
+        self.scroll_layout.addStretch(1)
+
+        self.reload_button.clicked.connect(self.reload_profile)
+        self.save_button.clicked.connect(self.save_profile)
+        self.start_button.clicked.connect(self._emit_start)
+        self.stop_button.clicked.connect(self._emit_stop)
+
+        self.clear_profile()
+
+    @property
+    def current_profile_name(self) -> str | None:
+        return self._current_profile_name
+
+    @property
+    def is_dirty(self) -> bool:
+        return self._dirty
+
+    def _build_common_card(self) -> None:
+        self.common_card = SectionCard("通用设置", "账号、登录方式、并发和运行节奏都在这里调。", self.scroll_content)
+        common_grid = QGridLayout()
+        common_grid.setHorizontalSpacing(16)
+        common_grid.setVerticalSpacing(12)
+
+        self.use_cookies_check = CheckBox("优先使用已有 cookies 登录", self.common_card)
+        self.username_edit = LineEdit(self.common_card)
+        self.username_edit.setPlaceholderText("手机号账号")
+        self.password_edit = LineEdit(self.common_card)
+        self.password_edit.setEchoMode(LineEdit.Password)
+        self.password_edit.setPlaceholderText("登录密码")
+        self.speed_spin = DoubleSpinBox(self.common_card)
+        self.speed_spin.setRange(1.0, 2.0)
+        self.speed_spin.setDecimals(1)
+        self.speed_spin.setSingleStep(0.1)
+        self.jobs_spin = SpinBox(self.common_card)
+        self.jobs_spin.setRange(1, 16)
+        self.notopen_combo = ComboBox(self.common_card)
+        self.notopen_combo.addItems(NOTOPEN_ACTION_OPTIONS)
+        self.cookies_path_edit = LineEdit(self.common_card)
+        self.cookies_path_edit.setPlaceholderText("留空则自动使用当前配置独立的 cookies 文件")
+        self.cache_path_edit = LineEdit(self.common_card)
+        self.cache_path_edit.setPlaceholderText("留空则自动使用当前配置独立的缓存文件")
+
+        common_grid.addWidget(self.use_cookies_check, 0, 0, 1, 2)
+        common_grid.addWidget(make_field("账号", self.username_edit), 1, 0)
+        common_grid.addWidget(make_field("密码", self.password_edit), 1, 1)
+        common_grid.addWidget(make_field("倍速", self.speed_spin), 2, 0)
+        common_grid.addWidget(make_field("并发章节数", self.jobs_spin), 2, 1)
+        common_grid.addWidget(make_field("关闭章节处理", self.notopen_combo), 3, 0)
+        common_grid.addWidget(make_field("Cookies 路径", self.cookies_path_edit), 4, 0)
+        common_grid.addWidget(make_field("Cache 路径", self.cache_path_edit), 4, 1)
+        self.common_card.body_layout.addLayout(common_grid)
+        self.scroll_layout.addWidget(self.common_card)
+
+        self._wire_dirty_signals(
+            self.use_cookies_check,
+            self.username_edit,
+            self.password_edit,
+            self.speed_spin,
+            self.jobs_spin,
+            self.notopen_combo,
+            self.cookies_path_edit,
+            self.cache_path_edit,
+        )
+
+    def _build_tiku_card(self) -> None:
+        self.tiku_card = SectionCard(
+            "题库与 AI",
+            "空白字段会回退到全局设置。协同题库不再手填字符串，直接点选即可。",
+            self.scroll_content,
+        )
+        top_grid = QGridLayout()
+        top_grid.setHorizontalSpacing(16)
+        top_grid.setVerticalSpacing(12)
+
+        self.provider_combo = ComboBox(self.tiku_card)
+        self.provider_combo.addItems(PROVIDER_OPTIONS)
+        self.decision_provider_combo = ComboBox(self.tiku_card)
+        self.decision_provider_combo.addItems(DECISION_PROVIDER_OPTIONS)
+        self.check_connection_check = CheckBox("启动时检查大模型连接", self.tiku_card)
+        self.submit_check = CheckBox("达到覆盖率后自动提交", self.tiku_card)
+        self.cover_rate_spin = DoubleSpinBox(self.tiku_card)
+        self.cover_rate_spin.setRange(0.1, 1.0)
+        self.cover_rate_spin.setDecimals(2)
+        self.cover_rate_spin.setSingleStep(0.05)
+        self.delay_spin = DoubleSpinBox(self.tiku_card)
+        self.delay_spin.setRange(0.0, 60.0)
+        self.delay_spin.setDecimals(1)
+        self.delay_spin.setSingleStep(0.5)
+
+        top_grid.addWidget(make_field("主题库", self.provider_combo), 0, 0)
+        top_grid.addWidget(make_field("冲突仲裁题库", self.decision_provider_combo), 0, 1)
+        top_grid.addWidget(make_field("最低覆盖率", self.cover_rate_spin), 1, 0)
+        top_grid.addWidget(make_field("单题间隔（秒）", self.delay_spin), 1, 1)
+        top_grid.addWidget(self.check_connection_check, 2, 0)
+        top_grid.addWidget(self.submit_check, 2, 1)
+        self.tiku_card.body_layout.addLayout(top_grid)
+
+        self.provider_summary = CaptionLabel(self.tiku_card)
+        self.provider_summary.setWordWrap(True)
+        self.tiku_card.body_layout.addWidget(self.provider_summary)
+        self.provider_chip_panel = ChipPanel("还没有协同题库选项", self.tiku_card)
+        self.provider_chip_panel.set_items([(item, item) for item in COLLAB_PROVIDER_OPTIONS], [])
+        self.tiku_card.body_layout.addWidget(make_field("协同题库列表", self.provider_chip_panel, "勾 1 个时会直接切到该题库，勾 2 个以上会自动进入 MultiTiku。"))
+
+        detail_grid = QGridLayout()
+        detail_grid.setHorizontalSpacing(16)
+        detail_grid.setVerticalSpacing(12)
+
+        self.tokens_edit = LineEdit(self.tiku_card)
+        self.tokens_edit.setPlaceholderText("Enncy / LIKE 的令牌，多个用英文逗号分隔")
+        self.ai_endpoint_edit = LineEdit(self.tiku_card)
+        self.ai_endpoint_edit.setPlaceholderText("兼容 OpenAI 格式的接口地址")
+        self.ai_key_edit = LineEdit(self.tiku_card)
+        self.ai_key_edit.setPlaceholderText("接口密钥")
+        self.ai_model_edit = LineEdit(self.tiku_card)
+        self.ai_model_edit.setPlaceholderText("模型名称")
+        self.http_proxy_edit = LineEdit(self.tiku_card)
+        self.http_proxy_edit.setPlaceholderText("可选代理，例如 http://127.0.0.1:7890")
+        self.min_interval_spin = SpinBox(self.tiku_card)
+        self.min_interval_spin.setRange(0, 120)
+
+        self.silicon_key_edit = LineEdit(self.tiku_card)
+        self.silicon_key_edit.setPlaceholderText("SiliconFlow 密钥")
+        self.silicon_model_edit = LineEdit(self.tiku_card)
+        self.silicon_model_edit.setPlaceholderText("SiliconFlow 模型")
+        self.silicon_endpoint_edit = LineEdit(self.tiku_card)
+        self.silicon_endpoint_edit.setPlaceholderText("SiliconFlow 接口地址")
+
+        self.like_model_edit = LineEdit(self.tiku_card)
+        self.like_model_edit.setPlaceholderText("LIKE 模型")
+        self.like_retry_times_spin = SpinBox(self.tiku_card)
+        self.like_retry_times_spin.setRange(0, 10)
+        self.like_search_check = CheckBox("LIKE 启用联网搜索", self.tiku_card)
+        self.like_vision_check = CheckBox("LIKE 启用视觉识图", self.tiku_card)
+        self.like_retry_check = CheckBox("LIKE 失败自动重试", self.tiku_card)
+
+        self.adapter_url_edit = LineEdit(self.tiku_card)
+        self.adapter_url_edit.setPlaceholderText("TikuAdapter 地址")
+        self.true_list_edit = LineEdit(self.tiku_card)
+        self.true_list_edit.setPlaceholderText("正确,对,√,是")
+        self.false_list_edit = LineEdit(self.tiku_card)
+        self.false_list_edit.setPlaceholderText("错误,错,×,否")
+
+        detail_grid.addWidget(make_field("令牌列表", self.tokens_edit, "留空则继承全局令牌"), 0, 0, 1, 2)
+        detail_grid.addWidget(make_field("AI 接口地址", self.ai_endpoint_edit), 1, 0)
+        detail_grid.addWidget(make_field("AI 密钥", self.ai_key_edit), 1, 1)
+        detail_grid.addWidget(make_field("AI 模型", self.ai_model_edit), 2, 0)
+        detail_grid.addWidget(make_field("HTTP 代理", self.http_proxy_edit), 2, 1)
+        detail_grid.addWidget(make_field("最小请求间隔", self.min_interval_spin), 3, 0)
+        detail_grid.addWidget(make_field("硅基密钥", self.silicon_key_edit), 4, 0)
+        detail_grid.addWidget(make_field("硅基模型", self.silicon_model_edit), 4, 1)
+        detail_grid.addWidget(make_field("硅基接口地址", self.silicon_endpoint_edit), 5, 0, 1, 2)
+        detail_grid.addWidget(make_field("LIKE 模型", self.like_model_edit), 6, 0)
+        detail_grid.addWidget(make_field("LIKE 重试次数", self.like_retry_times_spin), 6, 1)
+        detail_grid.addWidget(self.like_search_check, 7, 0)
+        detail_grid.addWidget(self.like_vision_check, 7, 1)
+        detail_grid.addWidget(self.like_retry_check, 8, 0)
+        detail_grid.addWidget(make_field("TikuAdapter 地址", self.adapter_url_edit), 9, 0, 1, 2)
+        detail_grid.addWidget(make_field("判断题真值列表", self.true_list_edit), 10, 0)
+        detail_grid.addWidget(make_field("判断题假值列表", self.false_list_edit), 10, 1)
+        self.tiku_card.body_layout.addLayout(detail_grid)
+        self.scroll_layout.addWidget(self.tiku_card)
+
+        self.provider_combo.currentTextChanged.connect(self._on_provider_combo_changed)
+        self.provider_chip_panel.selection_changed.connect(self._on_provider_chips_changed)
+        self._wire_dirty_signals(
+            self.provider_combo,
+            self.decision_provider_combo,
+            self.check_connection_check,
+            self.submit_check,
+            self.cover_rate_spin,
+            self.delay_spin,
+            self.tokens_edit,
+            self.ai_endpoint_edit,
+            self.ai_key_edit,
+            self.ai_model_edit,
+            self.http_proxy_edit,
+            self.min_interval_spin,
+            self.silicon_key_edit,
+            self.silicon_model_edit,
+            self.silicon_endpoint_edit,
+            self.like_model_edit,
+            self.like_retry_times_spin,
+            self.like_search_check,
+            self.like_vision_check,
+            self.like_retry_check,
+            self.adapter_url_edit,
+            self.true_list_edit,
+            self.false_list_edit,
+        )
+
+    def _build_course_card(self) -> None:
+        self.course_card = SectionCard(
+            "课程选择",
+            "点一下“刷新课程列表”就会按当前配置的账号或 cookies 去请求课程，再直接勾选课程块。",
+            self.scroll_content,
+        )
+        button_row = QHBoxLayout()
+        button_row.setSpacing(12)
+        self.refresh_courses_button = PrimaryPushButton("刷新课程列表", self.course_card)
+        self.clear_courses_button = PushButton("清空已选课程", self.course_card)
+        button_row.addWidget(self.refresh_courses_button)
+        button_row.addWidget(self.clear_courses_button)
+        button_row.addStretch(1)
+        self.course_card.body_layout.addLayout(button_row)
+
+        self.course_status = CaptionLabel("尚未加载课程列表。", self.course_card)
+        self.course_status.setWordWrap(True)
+        self.course_card.body_layout.addWidget(self.course_status)
+
+        self.course_chip_panel = ChipPanel("还没拉取课程列表，点上面的刷新按钮即可。", self.course_card)
+        self.course_chip_panel.selection_changed.connect(self._on_course_selection_changed)
+        self.course_card.body_layout.addWidget(self.course_chip_panel)
+        self.scroll_layout.addWidget(self.course_card)
+
+        self.refresh_courses_button.clicked.connect(self.refresh_courses)
+        self.clear_courses_button.clicked.connect(self.clear_courses)
+
+    def _build_notification_card(self) -> None:
+        self.notification_card = SectionCard("通知", "如果当前配置不需要通知，保留“不启用”即可。", self.scroll_content)
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(12)
+        self.notification_provider_combo = ComboBox(self.notification_card)
+        self.notification_provider_combo.addItems(NOTIFICATION_PROVIDER_OPTIONS)
+        self.notification_url_edit = LineEdit(self.notification_card)
+        self.notification_url_edit.setPlaceholderText("推送地址")
+        self.notification_chat_id_edit = LineEdit(self.notification_card)
+        self.notification_chat_id_edit.setPlaceholderText("Telegram 会话 ID")
+        grid.addWidget(make_field("通知提供方", self.notification_provider_combo), 0, 0)
+        grid.addWidget(make_field("通知地址", self.notification_url_edit), 1, 0, 1, 2)
+        grid.addWidget(make_field("Telegram 会话 ID", self.notification_chat_id_edit), 2, 0)
+        self.notification_card.body_layout.addLayout(grid)
+        self.scroll_layout.addWidget(self.notification_card)
+
+        self._wire_dirty_signals(
+            self.notification_provider_combo,
+            self.notification_url_edit,
+            self.notification_chat_id_edit,
+        )
+
+    def _build_json_card(self) -> None:
+        self.json_card = SectionCard("高级 JSON 编辑", "默认不需要看原始 JSON。需要时再展开直接改，并支持自动格式化。", self.scroll_content)
+        toggle_row = QHBoxLayout()
+        toggle_row.setSpacing(12)
+        self.toggle_json_button = TransparentPushButton("展开 JSON 编辑器", self.json_card)
+        self.toggle_json_button.clicked.connect(self.toggle_json_editor)
+        toggle_row.addWidget(self.toggle_json_button)
+        toggle_row.addStretch(1)
+        self.json_card.body_layout.addLayout(toggle_row)
+
+        self.json_editor_container = QWidget(self.json_card)
+        self.json_editor_container.hide()
+        json_layout = QVBoxLayout(self.json_editor_container)
+        json_layout.setContentsMargins(0, 0, 0, 0)
+        json_layout.setSpacing(10)
+        self.json_editor = PlainTextEdit(self.json_editor_container)
+        self.json_editor.setPlaceholderText("这里显示当前配置的 JSON。")
+        self.json_editor.setMinimumHeight(260)
+        json_layout.addWidget(self.json_editor)
+
+        json_button_row = QHBoxLayout()
+        json_button_row.setSpacing(12)
+        self.refresh_json_button = PushButton("从表单刷新 JSON", self.json_editor_container)
+        self.apply_json_button = PushButton("应用 JSON 到表单", self.json_editor_container)
+        self.save_json_button = PrimaryPushButton("直接保存 JSON", self.json_editor_container)
+        json_button_row.addWidget(self.refresh_json_button)
+        json_button_row.addWidget(self.apply_json_button)
+        json_button_row.addWidget(self.save_json_button)
+        json_button_row.addStretch(1)
+        json_layout.addLayout(json_button_row)
+        self.json_card.body_layout.addWidget(self.json_editor_container)
+        self.scroll_layout.addWidget(self.json_card)
+
+        self.refresh_json_button.clicked.connect(self.refresh_json_editor)
+        self.apply_json_button.clicked.connect(self.apply_json_to_form)
+        self.save_json_button.clicked.connect(self.save_json_directly)
+
+    def _wire_dirty_signals(self, *widgets: QWidget) -> None:
+        for widget in widgets:
+            if isinstance(widget, LineEdit):
+                widget.textChanged.connect(self._mark_dirty)
+            elif isinstance(widget, (SpinBox, DoubleSpinBox)):
+                widget.valueChanged.connect(self._mark_dirty)
+            elif isinstance(widget, ComboBox):
+                widget.currentTextChanged.connect(self._mark_dirty)
+            elif isinstance(widget, CheckBox):
+                widget.stateChanged.connect(self._mark_dirty)
+
+    def _set_editor_enabled(self, enabled: bool) -> None:
+        for widget in [
+            self.reload_button,
+            self.save_button,
+            self.start_button,
+            self.stop_button,
+            self.use_cookies_check,
+            self.username_edit,
+            self.password_edit,
+            self.speed_spin,
+            self.jobs_spin,
+            self.notopen_combo,
+            self.cookies_path_edit,
+            self.cache_path_edit,
+            self.provider_combo,
+            self.decision_provider_combo,
+            self.check_connection_check,
+            self.submit_check,
+            self.cover_rate_spin,
+            self.delay_spin,
+            self.tokens_edit,
+            self.ai_endpoint_edit,
+            self.ai_key_edit,
+            self.ai_model_edit,
+            self.http_proxy_edit,
+            self.min_interval_spin,
+            self.silicon_key_edit,
+            self.silicon_model_edit,
+            self.silicon_endpoint_edit,
+            self.like_model_edit,
+            self.like_retry_times_spin,
+            self.like_search_check,
+            self.like_vision_check,
+            self.like_retry_check,
+            self.adapter_url_edit,
+            self.true_list_edit,
+            self.false_list_edit,
+            self.refresh_courses_button,
+            self.clear_courses_button,
+            self.notification_provider_combo,
+            self.notification_url_edit,
+            self.notification_chat_id_edit,
+            self.toggle_json_button,
+        ]:
+            widget.setEnabled(enabled)
+        self.provider_chip_panel.setEnabled(enabled)
+        self.course_chip_panel.setEnabled(enabled)
+
+    def clear_profile(self) -> None:
+        self._current_profile_name = None
+        self._dirty = False
+        self._profile_source = deepcopy(DEFAULT_PROFILE)
+        self._courses = []
+        self._selected_course_ids = []
+        self._loading = True
+
+        self.profile_title.setText("未选择配置")
+        self.profile_state.setText("从左侧选择一个配置开始编辑。")
+        self.use_cookies_check.setChecked(False)
+        self.username_edit.clear()
+        self.password_edit.clear()
+        self.speed_spin.setValue(1.0)
+        self.jobs_spin.setValue(4)
+        set_combo_text(self.notopen_combo, "retry")
+        self.cookies_path_edit.clear()
+        self.cache_path_edit.clear()
+
+        set_combo_text(self.provider_combo, "TikuYanxi")
+        set_combo_text(self.decision_provider_combo, "SiliconFlow")
+        self.check_connection_check.setChecked(True)
+        self.submit_check.setChecked(False)
+        self.cover_rate_spin.setValue(0.9)
+        self.delay_spin.setValue(1.0)
+        self.tokens_edit.clear()
+        self.ai_endpoint_edit.clear()
+        self.ai_key_edit.clear()
+        self.ai_model_edit.clear()
+        self.http_proxy_edit.clear()
+        self.min_interval_spin.setValue(3)
+        self.silicon_key_edit.clear()
+        self.silicon_model_edit.clear()
+        self.silicon_endpoint_edit.clear()
+        self.like_model_edit.clear()
+        self.like_retry_times_spin.setValue(3)
+        self.like_search_check.setChecked(False)
+        self.like_vision_check.setChecked(True)
+        self.like_retry_check.setChecked(True)
+        self.adapter_url_edit.clear()
+        self.true_list_edit.setText(join_csv(DEFAULT_PROFILE["tiku"]["true_list"]))
+        self.false_list_edit.setText(join_csv(DEFAULT_PROFILE["tiku"]["false_list"]))
+        self.provider_chip_panel.set_selected([])
+
+        set_combo_text(self.notification_provider_combo, "不启用")
+        self.notification_url_edit.clear()
+        self.notification_chat_id_edit.clear()
+        self.json_editor.clear()
+        self.course_chip_panel.set_items([], [])
+        self.course_status.setText("尚未加载课程列表。")
+        self.provider_summary.setText("还没有选择题库。")
+        self._loading = False
+        self._set_editor_enabled(False)
+
+    def load_profile(self, profile_name: str) -> None:
+        profile = load_json_profile(profile_name)
+        self._populate_profile(profile_name, profile)
+
+    def _populate_profile(self, profile_name: str, profile: dict) -> None:
+        self._current_profile_name = profile_name
+        self._profile_source = deepcopy(profile)
+        self._selected_course_ids = list(profile.get("common", {}).get("course_list", []))
+        self._courses = self._course_cache.get(profile_name, [])
+        self._dirty = False
+        self._loading = True
+
+        common = profile.get("common", {})
+        tiku = profile.get("tiku", {})
+        notification = profile.get("notification", {})
+
+        self.profile_title.setText(profile_name)
+        self.use_cookies_check.setChecked(bool(common.get("use_cookies", False)))
+        self.username_edit.setText(str(common.get("username", "")))
+        self.password_edit.setText(str(common.get("password", "")))
+        self.speed_spin.setValue(float(common.get("speed", 1.0) or 1.0))
+        self.jobs_spin.setValue(int(common.get("jobs", 4) or 4))
+        set_combo_text(self.notopen_combo, str(common.get("notopen_action", "retry") or "retry"))
+        self.cookies_path_edit.setText(str(common.get("cookies_path", "")))
+        self.cache_path_edit.setText(str(common.get("cache_path", "")))
+
+        provider = str(tiku.get("provider", "TikuYanxi") or "TikuYanxi")
+        selected_providers = list(tiku.get("providers", []) or [])
+        if not selected_providers and provider in COLLAB_PROVIDER_OPTIONS:
+            selected_providers = [provider]
+        set_combo_text(self.provider_combo, provider if provider in PROVIDER_OPTIONS else "TikuYanxi")
+        set_combo_text(self.decision_provider_combo, str(tiku.get("decision_provider", "SiliconFlow") or "SiliconFlow"))
+        self.check_connection_check.setChecked(bool(tiku.get("check_llm_connection", True)))
+        self.submit_check.setChecked(bool(tiku.get("submit", False)))
+        self.cover_rate_spin.setValue(float(tiku.get("cover_rate", 0.9) or 0.9))
+        self.delay_spin.setValue(float(tiku.get("delay", 1.0) or 1.0))
+        self.tokens_edit.setText(str(tiku.get("tokens", "")))
+        self.ai_endpoint_edit.setText(str(tiku.get("endpoint", "")))
+        self.ai_key_edit.setText(str(tiku.get("key", "")))
+        self.ai_model_edit.setText(str(tiku.get("model", "")))
+        self.http_proxy_edit.setText(str(tiku.get("http_proxy", "")))
+        self.min_interval_spin.setValue(int(tiku.get("min_interval_seconds", 3) or 3))
+        self.silicon_key_edit.setText(str(tiku.get("siliconflow_key", "")))
+        self.silicon_model_edit.setText(str(tiku.get("siliconflow_model", "")))
+        self.silicon_endpoint_edit.setText(str(tiku.get("siliconflow_endpoint", "")))
+        self.like_model_edit.setText(str(tiku.get("likeapi_model", "")))
+        self.like_retry_times_spin.setValue(int(tiku.get("likeapi_retry_times", 3) or 3))
+        self.like_search_check.setChecked(bool(tiku.get("likeapi_search", False)))
+        self.like_vision_check.setChecked(bool(tiku.get("likeapi_vision", True)))
+        self.like_retry_check.setChecked(bool(tiku.get("likeapi_retry", True)))
+        self.adapter_url_edit.setText(str(tiku.get("url", "")))
+        self.true_list_edit.setText(join_csv(list(tiku.get("true_list", DEFAULT_PROFILE["tiku"]["true_list"]))))
+        self.false_list_edit.setText(join_csv(list(tiku.get("false_list", DEFAULT_PROFILE["tiku"]["false_list"]))))
+        self.provider_chip_panel.set_selected(selected_providers)
+
+        provider_name = str(notification.get("provider", "") or "")
+        set_combo_text(self.notification_provider_combo, provider_name if provider_name else "不启用")
+        self.notification_url_edit.setText(str(notification.get("url", "")))
+        self.notification_chat_id_edit.setText(str(notification.get("tg_chat_id", "")))
+
+        if self._courses:
+            self._apply_course_cards(self._courses)
+        else:
+            self.course_chip_panel.set_items([], [])
+            self._update_course_summary()
+
+        self._loading = False
+        self._set_editor_enabled(True)
+        self.refresh_json_editor()
+        self._update_provider_summary()
+        self.refresh_run_state()
+
+    def refresh_run_state(self) -> None:
+        if not self._current_profile_name:
+            self.profile_state.setText("从左侧选择一个配置开始编辑。")
+            self.start_button.setEnabled(False)
+            self.stop_button.setEnabled(False)
+            return
+
+        run_state = self.run_manager.get_run(self._current_profile_name)
+        if run_state:
+            if run_state.status == "running":
+                text = f"运行中 | 运行配置：{run_state.runtime_config_path}"
+            else:
+                text = f"状态：{display_status(run_state.status)} | 运行配置：{run_state.runtime_config_path}"
+        else:
+            text = f"JSON 配置：{JSON_PROFILE_DIR / f'{self._current_profile_name}.json'}"
+
+        if self._dirty:
+            text += " | 有未保存修改"
+        self.profile_state.setText(text)
+        self.start_button.setEnabled(True)
+        self.stop_button.setEnabled(bool(run_state and run_state.status == "running"))
+
+    def reload_profile(self) -> None:
+        if not self._current_profile_name:
+            return
+        self.load_profile(self._current_profile_name)
+        show_bar(self, "success", "已重新载入", f"{self._current_profile_name} 已从磁盘重新载入。")
+
+    def collect_profile_data(self) -> dict:
+        if not self._current_profile_name:
+            raise ValueError("当前没有选中的配置")
+
+        profile = deepcopy(self._profile_source)
+        profile["name"] = self._current_profile_name
+        common = profile.setdefault("common", {})
+        tiku = profile.setdefault("tiku", {})
+        notification = profile.setdefault("notification", {})
+
+        common["use_cookies"] = self.use_cookies_check.isChecked()
+        common["cookies_path"] = self.cookies_path_edit.text().strip()
+        common["cache_path"] = self.cache_path_edit.text().strip()
+        common["username"] = self.username_edit.text().strip()
+        common["password"] = self.password_edit.text().strip()
+        common["course_list"] = list(self._selected_course_ids)
+        common["speed"] = round(float(self.speed_spin.value()), 2)
+        common["jobs"] = int(self.jobs_spin.value())
+        common["notopen_action"] = self.notopen_combo.currentText().strip() or "retry"
+
+        selected_providers = self.provider_chip_panel.selected_values()
+        provider_value = self.provider_combo.currentText().strip() or "TikuYanxi"
+        if len(selected_providers) > 1:
+            tiku["provider"] = "MultiTiku"
+            tiku["providers"] = selected_providers
+        elif len(selected_providers) == 1:
+            tiku["provider"] = selected_providers[0]
+            tiku["providers"] = selected_providers
+        else:
+            tiku["provider"] = provider_value
+            tiku["providers"] = []
+
+        tiku["decision_provider"] = self.decision_provider_combo.currentText().strip() or "SiliconFlow"
+        tiku["check_llm_connection"] = self.check_connection_check.isChecked()
+        tiku["submit"] = self.submit_check.isChecked()
+        tiku["cover_rate"] = round(float(self.cover_rate_spin.value()), 2)
+        tiku["delay"] = round(float(self.delay_spin.value()), 2)
+        tiku["tokens"] = self.tokens_edit.text().strip()
+        tiku["likeapi_search"] = self.like_search_check.isChecked()
+        tiku["likeapi_vision"] = self.like_vision_check.isChecked()
+        tiku["likeapi_model"] = self.like_model_edit.text().strip()
+        tiku["likeapi_retry"] = self.like_retry_check.isChecked()
+        tiku["likeapi_retry_times"] = int(self.like_retry_times_spin.value())
+        tiku["url"] = self.adapter_url_edit.text().strip()
+        tiku["endpoint"] = self.ai_endpoint_edit.text().strip()
+        tiku["key"] = self.ai_key_edit.text().strip()
+        tiku["model"] = self.ai_model_edit.text().strip()
+        tiku["min_interval_seconds"] = int(self.min_interval_spin.value())
+        tiku["http_proxy"] = self.http_proxy_edit.text().strip()
+        tiku["siliconflow_key"] = self.silicon_key_edit.text().strip()
+        tiku["siliconflow_model"] = self.silicon_model_edit.text().strip()
+        tiku["siliconflow_endpoint"] = self.silicon_endpoint_edit.text().strip()
+        tiku["true_list"] = split_csv(self.true_list_edit.text())
+        tiku["false_list"] = split_csv(self.false_list_edit.text())
+
+        notification_provider = self.notification_provider_combo.currentText().strip()
+        notification["provider"] = "" if notification_provider == "不启用" else notification_provider
+        notification["url"] = self.notification_url_edit.text().strip()
+        notification["tg_chat_id"] = self.notification_chat_id_edit.text().strip()
+        return profile
+
+    def save_profile(self) -> None:
+        try:
+            profile = self.collect_profile_data()
+            save_json_profile(profile)
+        except Exception as exc:
+            show_error(self, "保存失败", str(exc))
+            return
+
+        self._profile_source = deepcopy(profile)
+        self._dirty = False
+        self.refresh_json_editor()
+        self.refresh_run_state()
+        self.profile_saved.emit(profile["name"])
+        show_bar(self, "success", "保存成功", f"{profile['name']} 已写入 JSON 配置。")
+
+    def toggle_json_editor(self) -> None:
+        is_visible = self.json_editor_container.isVisible()
+        self.json_editor_container.setVisible(not is_visible)
+        self.toggle_json_button.setText("收起 JSON 编辑器" if not is_visible else "展开 JSON 编辑器")
+        if not is_visible:
+            self.refresh_json_editor()
+
+    def refresh_json_editor(self) -> None:
+        if not self._current_profile_name:
+            self.json_editor.clear()
+            return
+        try:
+            profile = self.collect_profile_data()
+        except Exception:
+            profile = deepcopy(self._profile_source)
+        self.json_editor.setPlainText(json.dumps(profile, ensure_ascii=False, indent=2) + "\n")
+
+    def apply_json_to_form(self) -> None:
+        if not self._current_profile_name:
+            return
+        try:
+            data = json.loads(self.json_editor.toPlainText() or "{}")
+        except json.JSONDecodeError as exc:
+            show_error(self, "JSON 解析失败", f"第 {exc.lineno} 行第 {exc.colno} 列附近有语法错误。")
+            return
+        if not isinstance(data, dict):
+            show_error(self, "JSON 结构不正确", "顶层必须是一个对象。")
+            return
+
+        merged = deepcopy(DEFAULT_PROFILE)
+        for section_name, section_value in data.items():
+            if isinstance(section_value, dict) and isinstance(merged.get(section_name), dict):
+                merged[section_name].update(section_value)
+            else:
+                merged[section_name] = section_value
+        merged["name"] = self._current_profile_name
+        self._profile_source = merged
+        self._dirty = True
+        self._populate_profile(self._current_profile_name, merged)
+        self._dirty = True
+        self.refresh_run_state()
+        show_bar(self, "success", "JSON 已应用", "JSON 内容已经同步到结构化表单。")
+
+    def save_json_directly(self) -> None:
+        if not self._current_profile_name:
+            return
+        try:
+            data = json.loads(self.json_editor.toPlainText() or "{}")
+        except json.JSONDecodeError as exc:
+            show_error(self, "JSON 解析失败", f"第 {exc.lineno} 行第 {exc.colno} 列附近有语法错误。")
+            return
+        if not isinstance(data, dict):
+            show_error(self, "JSON 结构不正确", "顶层必须是一个对象。")
+            return
+
+        data["name"] = self._current_profile_name
+        try:
+            save_json_profile(data)
+        except Exception as exc:
+            show_error(self, "保存失败", str(exc))
+            return
+
+        self._dirty = False
+        self.load_profile(self._current_profile_name)
+        self.profile_saved.emit(self._current_profile_name)
+        show_bar(self, "success", "JSON 已保存", f"{self._current_profile_name} 已按自动排版写回。")
+
+    def refresh_courses(self) -> None:
+        if not self._current_profile_name:
+            show_bar(self, "warning", "没有可刷新的配置", "先从左侧选择一个配置。")
+            return
+        if self._course_fetch_thread and self._course_fetch_thread.isRunning():
+            show_bar(self, "info", "课程刷新中", "当前配置的课程列表还在请求中。")
+            return
+
+        self.refresh_courses_button.setEnabled(False)
+        self.course_status.setText(f"{self._current_profile_name} 课程列表刷新中...")
+        self._course_fetch_thread = CourseFetchThread(self._current_profile_name, self)
+        self._course_fetch_thread.loaded.connect(self._on_courses_loaded)
+        self._course_fetch_thread.failed.connect(self._on_courses_failed)
+        self._course_fetch_thread.finished.connect(self._on_courses_thread_finished)
+        self._course_fetch_thread.start()
+
+    def clear_courses(self) -> None:
+        self._selected_course_ids = []
+        if self._courses:
+            self.course_chip_panel.clear_selection()
+        self._update_course_summary()
+        self._mark_dirty()
+
+    def _on_courses_loaded(self, profile_name: str, courses: object) -> None:
+        courses = list(courses or [])
+        self._course_cache[profile_name] = courses
+        if profile_name != self._current_profile_name:
+            return
+        self._courses = courses
+        selected_ids = [course["courseId"] for course in courses if course.get("selected")]
+        if selected_ids:
+            self._selected_course_ids = selected_ids
+        self._apply_course_cards(courses)
+        self._update_course_summary()
+        show_bar(self, "success", "课程已刷新", f"{profile_name} 共拉取到 {len(courses)} 门课程。")
+
+    def _on_courses_failed(self, profile_name: str, message: str) -> None:
+        if profile_name == self._current_profile_name:
+            self.course_status.setText(f"刷新失败：{message}")
+        show_error(self, "刷新课程列表失败", message)
+
+    def _on_courses_thread_finished(self) -> None:
+        self.refresh_courses_button.setEnabled(bool(self._current_profile_name))
+        self._course_fetch_thread = None
+
+    def _apply_course_cards(self, courses: list[dict]) -> None:
+        items = []
+        for course in courses:
+            title = str(course.get("title", "")).strip() or str(course.get("courseId", "")).strip()
+            teacher = str(course.get("teacher", "")).strip()
+            subtitle = f" | {teacher}" if teacher else ""
+            items.append((str(course.get("courseId", "")).strip(), f"{title}{subtitle}"))
+        self.course_chip_panel.set_items(items, self._selected_course_ids)
+
+    def _update_course_summary(self) -> None:
+        if self._courses:
+            self._selected_course_ids = self.course_chip_panel.selected_values()
+            self.course_status.setText(f"已选 {len(self._selected_course_ids)} / {len(self._courses)} 门课程。")
+            return
+        if self._selected_course_ids:
+            preview = ", ".join(self._selected_course_ids[:5])
+            suffix = " ..." if len(self._selected_course_ids) > 5 else ""
+            self.course_status.setText(
+                f"当前 JSON 里保存了 {len(self._selected_course_ids)} 个 courseId：{preview}{suffix}。点“刷新课程列表”后可以改成块选。"
+            )
+        else:
+            self.course_status.setText("尚未选择课程。")
+
+    def _on_course_selection_changed(self) -> None:
+        if self._loading:
+            return
+        self._selected_course_ids = self.course_chip_panel.selected_values()
+        self._update_course_summary()
+        self._mark_dirty()
+
+    def _on_provider_combo_changed(self, _value: str) -> None:
+        if self._loading:
+            return
+        provider = self.provider_combo.currentText().strip()
+        if provider and provider != "MultiTiku":
+            self.provider_chip_panel.set_selected([provider] if provider in COLLAB_PROVIDER_OPTIONS else [])
+        self._update_provider_summary()
+        self._mark_dirty()
+
+    def _on_provider_chips_changed(self) -> None:
+        if self._loading:
+            return
+        selected = self.provider_chip_panel.selected_values()
+        if len(selected) > 1:
+            set_combo_text(self.provider_combo, "MultiTiku")
+        elif len(selected) == 1:
+            set_combo_text(self.provider_combo, selected[0])
+        self._update_provider_summary()
+        self._mark_dirty()
+
+    def _update_provider_summary(self) -> None:
+        selected = self.provider_chip_panel.selected_values()
+        decision_provider = self.decision_provider_combo.currentText().strip() or "SiliconFlow"
+        if len(selected) > 1:
+            self.provider_summary.setText(
+                f"当前会按 MultiTiku 运行：{' + '.join(selected)}。答案冲突时交给 {decision_provider} 仲裁。"
+            )
+        elif len(selected) == 1:
+            self.provider_summary.setText(f"当前直接使用：{selected[0]}。")
+        else:
+            self.provider_summary.setText(f"当前按主题库运行：{self.provider_combo.currentText().strip() or 'TikuYanxi'}。")
+
+    def _mark_dirty(self, *_args) -> None:
+        if self._loading or not self._current_profile_name:
+            return
+        self._dirty = True
+        self.refresh_run_state()
+
+    def _emit_start(self) -> None:
+        if self._current_profile_name:
+            self.start_requested.emit(self._current_profile_name)
+
+    def _emit_stop(self) -> None:
+        if self._current_profile_name:
+            self.stop_requested.emit(self._current_profile_name)
+
+
+class ProfilesPage(PageFrame):
+    def __init__(self, run_manager: RunManager, on_profiles_changed=None, parent=None) -> None:
+        super().__init__(
+            "配置管理",
+            "这里是主编辑页：左边批量勾选和启动，右边用结构化表单编辑 JSON 配置。",
+            parent,
+        )
+        self.run_manager = run_manager
+        self.run_manager.runs_changed.connect(self.refresh_run_context)
+        self.on_profiles_changed = on_profiles_changed
+        self._refreshing_list = False
+        self._suspend_selection_load = False
+        self.checked_profiles: set[str] = set()
+
+        splitter = QSplitter(Qt.Horizontal, self)
+        self.root_layout.addWidget(splitter, 1)
+
+        left_panel = QWidget(splitter)
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(12)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(8)
+        self.import_button = PushButton("导入旧 ini", left_panel)
+        self.create_button = PrimaryPushButton("新建配置", left_panel)
+        self.refresh_button = PushButton("刷新列表", left_panel)
+        action_row.addWidget(self.import_button)
+        action_row.addWidget(self.create_button)
+        action_row.addWidget(self.refresh_button)
+        left_layout.addLayout(action_row)
+
+        self.search_edit = SearchLineEdit(left_panel)
+        self.search_edit.setPlaceholderText("筛选配置")
+        left_layout.addWidget(self.search_edit)
+
+        select_row = QHBoxLayout()
+        select_row.setSpacing(8)
+        self.select_all_button = PushButton("全选", left_panel)
+        self.invert_button = PushButton("反选", left_panel)
+        self.clear_select_button = PushButton("清空", left_panel)
+        select_row.addWidget(self.select_all_button)
+        select_row.addWidget(self.invert_button)
+        select_row.addWidget(self.clear_select_button)
+        left_layout.addLayout(select_row)
+
+        run_row = QHBoxLayout()
+        run_row.setSpacing(8)
+        self.batch_start_button = PrimaryPushButton("启动勾选", left_panel)
+        self.batch_stop_button = PushButton("停止勾选", left_panel)
+        run_row.addWidget(self.batch_start_button)
+        run_row.addWidget(self.batch_stop_button)
+        left_layout.addLayout(run_row)
+
+        self.selection_status = CaptionLabel("当前勾选 0 个配置。", left_panel)
+        self.selection_status.setWordWrap(True)
+        left_layout.addWidget(self.selection_status)
+
+        self.profile_list = QListWidget(left_panel)
+        self.profile_list.setAlternatingRowColors(True)
+        left_layout.addWidget(self.profile_list, 1)
+        splitter.addWidget(left_panel)
+
+        self.editor = ProfileEditorPanel(run_manager, splitter)
+        splitter.addWidget(self.editor)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([340, 1040])
+
+        self.import_button.clicked.connect(self.import_profiles)
+        self.create_button.clicked.connect(self.create_profile)
+        self.refresh_button.clicked.connect(self.refresh_profiles)
+        self.search_edit.textChanged.connect(self.refresh_profiles)
+        self.select_all_button.clicked.connect(self.select_all)
+        self.invert_button.clicked.connect(self.invert_selection)
+        self.clear_select_button.clicked.connect(self.clear_selection)
+        self.batch_start_button.clicked.connect(self.start_checked_profiles)
+        self.batch_stop_button.clicked.connect(self.stop_checked_profiles)
+        self.profile_list.currentItemChanged.connect(self._on_current_item_changed)
+        self.profile_list.itemChanged.connect(self._on_item_changed)
+        self.editor.profile_saved.connect(self._on_profile_saved)
+        self.editor.start_requested.connect(self.start_profile)
+        self.editor.stop_requested.connect(self.stop_profile)
+
+        self.refresh_profiles()
+
+    def _item_name(self, item: QListWidgetItem | None) -> str:
+        if not item:
+            return ""
+        return str(item.data(Qt.UserRole) or "")
+
+    def refresh_profiles(self, select_name: str | None = None, preserve_editor: bool = False) -> None:
+        names = [path.stem for path in list_json_profiles()]
+        query = self.search_edit.text().strip().lower()
+        current_name = select_name or self.editor.current_profile_name or self._item_name(self.profile_list.currentItem())
+        visible_names = [name for name in names if query in name.lower()]
+        preserve_current_editor = preserve_editor or self.editor.is_dirty
+
+        self._refreshing_list = True
+        self.profile_list.clear()
+        for name in visible_names:
+            item = QListWidgetItem(self._display_name(name))
+            item.setData(Qt.UserRole, name)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
+            item.setCheckState(Qt.Checked if name in self.checked_profiles else Qt.Unchecked)
+            self.profile_list.addItem(item)
+        self._refreshing_list = False
+
+        if visible_names:
+            target_name = current_name if current_name in visible_names else visible_names[0]
+            self._suspend_selection_load = preserve_current_editor and target_name == self.editor.current_profile_name
+            for index in range(self.profile_list.count()):
+                item = self.profile_list.item(index)
+                if self._item_name(item) == target_name:
+                    self.profile_list.setCurrentRow(index)
+                    break
+            self._suspend_selection_load = False
+        elif not names:
+            self.editor.clear_profile()
+
+        self._update_selection_status()
+
+    def _display_name(self, profile_name: str) -> str:
+        run = self.run_manager.get_run(profile_name)
+        if run and run.status == "running":
+            return f"{profile_name}  [运行中]"
+        if run and run.status != "running":
+            return f"{profile_name}  [{display_status(run.status)}]"
+        return profile_name
+
+    def _on_current_item_changed(self, current: QListWidgetItem | None, _previous: QListWidgetItem | None) -> None:
+        if self._suspend_selection_load:
+            return
+        profile_name = self._item_name(current)
+        if profile_name:
+            self.editor.load_profile(profile_name)
+        elif self.profile_list.count() == 0:
+            self.editor.clear_profile()
+
+    def _on_item_changed(self, item: QListWidgetItem) -> None:
+        if self._refreshing_list:
+            return
+        profile_name = self._item_name(item)
+        if not profile_name:
+            return
+        if item.checkState() == Qt.Checked:
+            self.checked_profiles.add(profile_name)
+        else:
+            self.checked_profiles.discard(profile_name)
+        self._update_selection_status()
+
+    def _update_selection_status(self) -> None:
+        total = len([path.stem for path in list_json_profiles()])
+        checked = len(self.checked_profiles)
+        self.selection_status.setText(f"当前勾选 {checked} / {total} 个配置。")
+
+    def select_all(self) -> None:
+        for path in list_json_profiles():
+            self.checked_profiles.add(path.stem)
+        self.refresh_profiles()
+
+    def invert_selection(self) -> None:
+        all_names = {path.stem for path in list_json_profiles()}
+        self.checked_profiles = all_names - self.checked_profiles
+        self.refresh_profiles()
+
+    def clear_selection(self) -> None:
+        self.checked_profiles.clear()
+        self.refresh_profiles()
+
+    def _checked_names(self) -> list[str]:
+        return [path.stem for path in list_json_profiles() if path.stem in self.checked_profiles]
+
+    def import_profiles(self) -> None:
+        imported = bootstrap_json_profiles_from_legacy()
+        if imported:
+            self.refresh_profiles(select_name=imported[0]["name"])
+            self._notify_profiles_changed()
+            show_bar(self, "success", "导入完成", f"已迁移 {len(imported)} 个旧版 ini 配置。")
+        else:
+            show_bar(self, "info", "无需导入", "没有发现新的 ini 配置，或者它们已经迁移过。")
+
+    def create_profile(self) -> None:
+        name, accepted = QInputDialog.getText(self, "新建配置", "输入新的配置名称：")
+        if not accepted or not str(name).strip():
+            return
+        try:
+            profile = create_json_profile(str(name).strip())
+        except Exception as exc:
+            show_error(self, "创建失败", str(exc))
+            return
+        self.refresh_profiles(select_name=profile["name"])
+        self._notify_profiles_changed()
+        show_bar(self, "success", "配置已创建", f"{profile['name']} 已创建完成。")
+
+    def start_checked_profiles(self) -> None:
+        names = self._checked_names()
+        if not names:
+            show_bar(self, "warning", "没有勾选项", "先在左侧列表勾选要启动的配置。")
+            return
+
+        started = 0
+        skipped = 0
+        failed_messages = []
+        for name in names:
+            try:
+                self.run_manager.start_profile(name)
+                started += 1
+            except ValueError:
+                skipped += 1
+            except Exception as exc:
+                failed_messages.append(f"{name}: {exc}")
+        self.refresh_run_context()
+        message = f"已启动 {started} 个，跳过 {skipped} 个。"
+        if failed_messages:
+            message += " 失败：" + "；".join(failed_messages[:3])
+        show_bar(self, "success" if not failed_messages else "warning", "批量启动完成", message, duration=5000)
+
+    def stop_checked_profiles(self) -> None:
+        names = self._checked_names()
+        if not names:
+            show_bar(self, "warning", "没有勾选项", "先在左侧列表勾选要停止的配置。")
+            return
+
+        stopped = 0
+        skipped = 0
+        for name in names:
+            try:
+                self.run_manager.stop_profile(name)
+                stopped += 1
+            except ValueError:
+                skipped += 1
+        self.refresh_run_context()
+        show_bar(self, "success", "批量停止完成", f"已停止 {stopped} 个，跳过 {skipped} 个。")
+
+    def start_profile(self, profile_name: str) -> None:
+        try:
+            self.run_manager.start_profile(profile_name)
+        except Exception as exc:
+            show_error(self, "启动失败", str(exc))
+            return
+        self.refresh_run_context()
+        show_bar(self, "success", "已启动", f"{profile_name} 已启动。")
+
+    def stop_profile(self, profile_name: str) -> None:
+        try:
+            self.run_manager.stop_profile(profile_name)
+        except Exception as exc:
+            show_error(self, "停止失败", str(exc))
+            return
+        self.refresh_run_context()
+        show_bar(self, "success", "已停止", f"{profile_name} 已停止。")
+
+    def refresh_run_context(self) -> None:
+        self.refresh_profiles(
+            select_name=self.editor.current_profile_name,
+            preserve_editor=self.editor.is_dirty,
+        )
+        self.editor.refresh_run_state()
+
+    def _on_profile_saved(self, profile_name: str) -> None:
+        self.refresh_profiles(select_name=profile_name)
+        self._notify_profiles_changed()
+
+    def _notify_profiles_changed(self) -> None:
+        if self.on_profiles_changed:
+            self.on_profiles_changed()
+
+
+class GlobalSettingsPage(PageFrame):
+    def __init__(self, parent=None) -> None:
+        super().__init__(
+            "全局设置",
+            "全局默认值只需要填一遍。配置里对应字段留空时，会自动回退到这里。",
+            parent,
+        )
+        header_row = QHBoxLayout()
+        header_row.setSpacing(12)
+        self.reload_button = PushButton("重新读取", self)
+        self.save_button = PrimaryPushButton("保存全局设置", self)
+        header_row.addWidget(self.reload_button)
+        header_row.addWidget(self.save_button)
+        header_row.addStretch(1)
+        self.root_layout.addLayout(header_row)
+
+        self.scroll = QScrollArea(self)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.root_layout.addWidget(self.scroll, 1)
+
+        content = QWidget(self.scroll)
+        self.scroll_layout = QVBoxLayout(content)
+        self.scroll_layout.setContentsMargins(0, 0, 4, 12)
+        self.scroll_layout.setSpacing(16)
+        self.scroll.setWidget(content)
+
+        self._build_tiku_defaults_card()
+        self._build_notification_defaults_card()
+        self.scroll_layout.addStretch(1)
+
+        self.reload_button.clicked.connect(self.load_settings)
+        self.save_button.clicked.connect(self.save_settings)
+        self.load_settings()
+
+    def _build_tiku_defaults_card(self) -> None:
+        self.tiku_card = SectionCard("题库默认值", "这里放 Enncy、硅基、通用 AI 和 LIKE / Adapter 的全局凭据。", self.scroll.widget())
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(12)
+
+        self.tokens_edit = LineEdit(self.tiku_card)
+        self.tokens_edit.setPlaceholderText("Enncy / LIKE 令牌，多个逗号分隔")
+        self.ai_endpoint_edit = LineEdit(self.tiku_card)
+        self.ai_endpoint_edit.setPlaceholderText("OpenAI 兼容接口地址")
+        self.ai_key_edit = LineEdit(self.tiku_card)
+        self.ai_key_edit.setPlaceholderText("默认密钥")
+        self.ai_model_edit = LineEdit(self.tiku_card)
+        self.ai_model_edit.setPlaceholderText("默认模型")
+        self.http_proxy_edit = LineEdit(self.tiku_card)
+        self.http_proxy_edit.setPlaceholderText("默认代理")
+        self.min_interval_spin = SpinBox(self.tiku_card)
+        self.min_interval_spin.setRange(0, 120)
+        self.silicon_key_edit = LineEdit(self.tiku_card)
+        self.silicon_key_edit.setPlaceholderText("SiliconFlow 密钥")
+        self.silicon_model_edit = LineEdit(self.tiku_card)
+        self.silicon_model_edit.setPlaceholderText("SiliconFlow 模型")
+        self.silicon_endpoint_edit = LineEdit(self.tiku_card)
+        self.silicon_endpoint_edit.setPlaceholderText("SiliconFlow 接口地址")
+        self.like_model_edit = LineEdit(self.tiku_card)
+        self.like_model_edit.setPlaceholderText("LIKE 模型")
+        self.like_retry_times_spin = SpinBox(self.tiku_card)
+        self.like_retry_times_spin.setRange(0, 10)
+        self.like_search_check = CheckBox("LIKE 启用联网搜索", self.tiku_card)
+        self.like_vision_check = CheckBox("LIKE 启用视觉识图", self.tiku_card)
+        self.like_retry_check = CheckBox("LIKE 失败自动重试", self.tiku_card)
+        self.adapter_url_edit = LineEdit(self.tiku_card)
+        self.adapter_url_edit.setPlaceholderText("TikuAdapter 地址")
+
+        grid.addWidget(make_field("令牌列表", self.tokens_edit), 0, 0, 1, 2)
+        grid.addWidget(make_field("AI 接口地址", self.ai_endpoint_edit), 1, 0)
+        grid.addWidget(make_field("AI 密钥", self.ai_key_edit), 1, 1)
+        grid.addWidget(make_field("AI 模型", self.ai_model_edit), 2, 0)
+        grid.addWidget(make_field("HTTP 代理", self.http_proxy_edit), 2, 1)
+        grid.addWidget(make_field("最小请求间隔", self.min_interval_spin), 3, 0)
+        grid.addWidget(make_field("硅基密钥", self.silicon_key_edit), 4, 0)
+        grid.addWidget(make_field("硅基模型", self.silicon_model_edit), 4, 1)
+        grid.addWidget(make_field("硅基接口地址", self.silicon_endpoint_edit), 5, 0, 1, 2)
+        grid.addWidget(make_field("LIKE 模型", self.like_model_edit), 6, 0)
+        grid.addWidget(make_field("LIKE 重试次数", self.like_retry_times_spin), 6, 1)
+        grid.addWidget(self.like_search_check, 7, 0)
+        grid.addWidget(self.like_vision_check, 7, 1)
+        grid.addWidget(self.like_retry_check, 8, 0)
+        grid.addWidget(make_field("TikuAdapter 地址", self.adapter_url_edit), 9, 0, 1, 2)
+        self.tiku_card.body_layout.addLayout(grid)
+        self.scroll_layout.addWidget(self.tiku_card)
+
+    def _build_notification_defaults_card(self) -> None:
+        self.notification_card = SectionCard("通知默认值", "只有配置自己没填通知设置时才会用这里。", self.scroll.widget())
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(12)
+        self.notification_provider_combo = ComboBox(self.notification_card)
+        self.notification_provider_combo.addItems(NOTIFICATION_PROVIDER_OPTIONS)
+        self.notification_url_edit = LineEdit(self.notification_card)
+        self.notification_url_edit.setPlaceholderText("默认通知地址")
+        self.notification_chat_id_edit = LineEdit(self.notification_card)
+        self.notification_chat_id_edit.setPlaceholderText("默认 Telegram 会话 ID")
+        grid.addWidget(make_field("通知提供方", self.notification_provider_combo), 0, 0)
+        grid.addWidget(make_field("通知地址", self.notification_url_edit), 1, 0, 1, 2)
+        grid.addWidget(make_field("Telegram 会话 ID", self.notification_chat_id_edit), 2, 0)
+        self.notification_card.body_layout.addLayout(grid)
+        self.scroll_layout.addWidget(self.notification_card)
+
+    def load_settings(self) -> None:
+        settings = load_global_settings()
+        defaults = settings.get("defaults", {})
+        tiku = defaults.get("tiku", {})
+        notification = defaults.get("notification", {})
+
+        self.tokens_edit.setText(str(tiku.get("tokens", "")))
+        self.ai_endpoint_edit.setText(str(tiku.get("endpoint", "")))
+        self.ai_key_edit.setText(str(tiku.get("key", "")))
+        self.ai_model_edit.setText(str(tiku.get("model", "")))
+        self.http_proxy_edit.setText(str(tiku.get("http_proxy", "")))
+        self.min_interval_spin.setValue(int(tiku.get("min_interval_seconds", 3) or 3))
+        self.silicon_key_edit.setText(str(tiku.get("siliconflow_key", "")))
+        self.silicon_model_edit.setText(str(tiku.get("siliconflow_model", "")))
+        self.silicon_endpoint_edit.setText(str(tiku.get("siliconflow_endpoint", "")))
+        self.like_model_edit.setText(str(tiku.get("likeapi_model", "")))
+        self.like_retry_times_spin.setValue(int(tiku.get("likeapi_retry_times", 3) or 3))
+        self.like_search_check.setChecked(str(tiku.get("likeapi_search", "false")).lower() == "true")
+        self.like_vision_check.setChecked(str(tiku.get("likeapi_vision", "true")).lower() == "true")
+        self.like_retry_check.setChecked(str(tiku.get("likeapi_retry", "true")).lower() == "true")
+        self.adapter_url_edit.setText(str(tiku.get("url", "")))
+
+        provider_name = str(notification.get("provider", "") or "")
+        set_combo_text(self.notification_provider_combo, provider_name if provider_name else "不启用")
+        self.notification_url_edit.setText(str(notification.get("url", "")))
+        self.notification_chat_id_edit.setText(str(notification.get("tg_chat_id", "")))
+
+    def save_settings(self) -> None:
+        settings = deepcopy(DEFAULT_GLOBAL_SETTINGS)
+        settings["defaults"]["tiku"].update(
+            {
+                "tokens": self.tokens_edit.text().strip(),
+                "endpoint": self.ai_endpoint_edit.text().strip(),
+                "key": self.ai_key_edit.text().strip(),
+                "model": self.ai_model_edit.text().strip(),
+                "http_proxy": self.http_proxy_edit.text().strip(),
+                "min_interval_seconds": str(int(self.min_interval_spin.value())),
+                "siliconflow_key": self.silicon_key_edit.text().strip(),
+                "siliconflow_model": self.silicon_model_edit.text().strip(),
+                "siliconflow_endpoint": self.silicon_endpoint_edit.text().strip(),
+                "url": self.adapter_url_edit.text().strip(),
+                "likeapi_search": "true" if self.like_search_check.isChecked() else "false",
+                "likeapi_vision": "true" if self.like_vision_check.isChecked() else "false",
+                "likeapi_model": self.like_model_edit.text().strip(),
+                "likeapi_retry": "true" if self.like_retry_check.isChecked() else "false",
+                "likeapi_retry_times": str(int(self.like_retry_times_spin.value())),
+            }
+        )
+        provider_name = self.notification_provider_combo.currentText().strip()
+        settings["defaults"]["notification"].update(
+            {
+                "provider": "" if provider_name == "不启用" else provider_name,
+                "url": self.notification_url_edit.text().strip(),
+                "tg_chat_id": self.notification_chat_id_edit.text().strip(),
+            }
+        )
+        save_global_settings(settings)
+        show_bar(self, "success", "全局设置已保存", "空白配置字段现在会自动继承这里的默认值。")
+
+
+class LogCard(CardWidget):
+    start_requested = pyqtSignal(str)
+    stop_requested = pyqtSignal(str)
+
+    def __init__(self, profile_name: str, run_manager: RunManager, parent=None) -> None:
+        super().__init__(parent)
+        self.profile_name = profile_name
+        self.run_manager = run_manager
+        self.setMinimumWidth(460)
+        self.setMaximumWidth(520)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
+
+        header_row = QHBoxLayout()
+        header_row.setSpacing(10)
+        self.title_label = StrongBodyLabel(profile_name, self)
+        self.status_label = CaptionLabel("未启动", self)
+        header_row.addWidget(self.title_label, 1)
+        header_row.addWidget(self.status_label)
+        layout.addLayout(header_row)
+
+        button_row = QHBoxLayout()
+        button_row.setSpacing(8)
+        self.start_button = PrimaryPushButton("启动", self)
+        self.stop_button = PushButton("停止", self)
+        button_row.addWidget(self.start_button)
+        button_row.addWidget(self.stop_button)
+        button_row.addStretch(1)
+        layout.addLayout(button_row)
+
+        self.meta_label = CaptionLabel("等待运行。", self)
+        self.meta_label.setWordWrap(True)
+        layout.addWidget(self.meta_label)
+
+        self.log_view = PlainTextEdit(self)
+        self.log_view.setReadOnly(True)
+        self.log_view.setMinimumHeight(240)
+        self.log_view.setPlaceholderText("启动后这里会显示实时日志。")
+        layout.addWidget(self.log_view, 1)
+
+        self.start_button.clicked.connect(lambda: self.start_requested.emit(self.profile_name))
+        self.stop_button.clicked.connect(lambda: self.stop_requested.emit(self.profile_name))
+
+    def refresh_card(self) -> None:
+        profile = load_json_profile(self.profile_name)
+        summary = profile_summary(profile)
+        run = self.run_manager.get_run(self.profile_name)
+        if run:
+            status = display_status(run.status)
+            runtime_info = f"运行配置：{run.runtime_config_path}"
+            if run.status == "running":
+                runtime_info += " | 正在实时刷新"
+        else:
+            status = display_status("idle")
+            runtime_info = "尚未启动"
+
+        providers = summary.get("providers", []) or []
+        provider_text = " + ".join(providers) if len(providers) > 1 else summary.get("provider", "未配置")
+        self.status_label.setText(status)
+        self.meta_label.setText(
+            f"题库：{provider_text}\n课程数：{summary.get('course_count', 0)}\n{runtime_info}"
+        )
+        self.start_button.setEnabled(status != "running")
+        self.stop_button.setEnabled(status == "running")
+        logs = self.run_manager.logs_for_profile(self.profile_name)
+        if logs.strip():
+            self.log_view.setPlainText(logs)
+            scrollbar = self.log_view.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+        else:
+            self.log_view.clear()
+
+    def append_log(self, line: str) -> None:
+        if not self.log_view.toPlainText():
+            self.log_view.setPlainText(line)
+        else:
+            self.log_view.appendPlainText(line)
+        scrollbar = self.log_view.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+
+class RunsPage(PageFrame):
+    def __init__(self, run_manager: RunManager, parent=None) -> None:
+        super().__init__(
+            "运行日志",
+            "日志页按“一个配置文件一个框”来排版，每个配置都有自己独立的启动、停止和实时日志区域。",
+            parent,
+        )
+        self.run_manager = run_manager
+        self.cards: dict[str, LogCard] = {}
+        self.run_manager.runs_changed.connect(self.refresh_cards)
+        self.run_manager.log_received.connect(self.on_log_received)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(12)
+        self.refresh_button = PrimaryPushButton("刷新日志墙", self)
+        top_row.addWidget(self.refresh_button)
+        top_row.addStretch(1)
+        self.root_layout.addLayout(top_row)
+
+        self.empty_label = CaptionLabel("还没有配置。去“配置管理”页创建或导入后，这里会自动长出日志卡片。", self)
+        self.empty_label.setWordWrap(True)
+        self.root_layout.addWidget(self.empty_label)
+
+        self.scroll = QScrollArea(self)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.root_layout.addWidget(self.scroll, 1)
+
+        self.flow_host = QWidget(self.scroll)
+        self.flow_layout = FlowLayout(self.flow_host)
+        self.flow_layout.setContentsMargins(0, 0, 4, 12)
+        self.flow_layout.setHorizontalSpacing(14)
+        self.flow_layout.setVerticalSpacing(14)
+        self.scroll.setWidget(self.flow_host)
+
+        self.refresh_button.clicked.connect(self.refresh_cards)
+        self.refresh_cards()
+
+    def refresh_cards(self) -> None:
+        names = [path.stem for path in list_json_profiles()]
+        existing_names = set(self.cards)
+
+        for name in sorted(existing_names - set(names)):
+            card = self.cards.pop(name)
+            card.deleteLater()
+
+        for name in names:
+            if name not in self.cards:
+                card = LogCard(name, self.run_manager, self.flow_host)
+                card.start_requested.connect(self.start_profile)
+                card.stop_requested.connect(self.stop_profile)
+                self.cards[name] = card
+
+        while self.flow_layout.count():
+            widget = self.flow_layout.takeAt(0)
+            if widget is not None:
+                widget.setParent(None)
+
+        for name in names:
+            card = self.cards[name]
+            self.flow_layout.addWidget(card)
+            card.refresh_card()
+
+        self.empty_label.setVisible(not bool(names))
+
+    def start_profile(self, profile_name: str) -> None:
+        try:
+            self.run_manager.start_profile(profile_name)
+        except Exception as exc:
+            show_error(self, "启动失败", str(exc))
+            return
+        self.refresh_cards()
+        show_bar(self, "success", "已启动", f"{profile_name} 已启动。")
+
+    def stop_profile(self, profile_name: str) -> None:
+        try:
+            self.run_manager.stop_profile(profile_name)
+        except Exception as exc:
+            show_error(self, "停止失败", str(exc))
+            return
+        self.refresh_cards()
+        show_bar(self, "success", "已停止", f"{profile_name} 已停止。")
+
+    def on_log_received(self, profile_name: str, line: str) -> None:
+        card = self.cards.get(profile_name)
+        if card:
+            card.append_log(line)
+
+
+class DesktopMainWindow(MSFluentWindow):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle(APP_TITLE)
+        self.resize(1480, 980)
+
+        ensure_desktop_state()
+        bootstrap_json_profiles_from_legacy()
+        self.run_manager = RunManager(self)
+
+        self.home_page = HomePage(self.run_manager, self)
+        self.profiles_page = ProfilesPage(self.run_manager, self.refresh_profile_dependent_pages, self)
+        self.global_settings_page = GlobalSettingsPage(self)
+        self.runs_page = RunsPage(self.run_manager, self)
+
+        self.addSubInterface(self.home_page, FluentIcon.HOME, "概览")
+        self.addSubInterface(self.profiles_page, FluentIcon.PEOPLE, "配置管理")
+        self.addSubInterface(self.global_settings_page, FluentIcon.SETTING, "全局设置")
+        self.addSubInterface(
+            self.runs_page,
+            FluentIcon.PLAY_SOLID,
+            "运行日志",
+            position=NavigationItemPosition.BOTTOM,
+        )
+
+        self.refresh_profile_dependent_pages()
+
+    def refresh_profile_dependent_pages(self) -> None:
+        self.home_page.refresh_summary()
+        if hasattr(self, "runs_page"):
+            self.runs_page.refresh_cards()
+
+
+def run_desktop_app() -> int:
+    ensure_desktop_state()
+    application = QApplication.instance() or QApplication(sys.argv)
+    application.setApplicationName(APP_TITLE)
+    window = DesktopMainWindow()
+    window.show()
+    return application.exec_()

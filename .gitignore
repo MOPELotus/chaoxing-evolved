@@ -61,10 +61,6 @@ local_settings.py
 db.sqlite3
 db.sqlite3-journal
 
-# Flask stuff:
-instance/
-.webassets-cache
-
 # Scrapy stuff:
 .scrapy
 
@@ -154,3 +150,7 @@ config*.ini
 .idea/
 .vscode/
 cache.json
+*.cookies.txt
+*.cache.json
+/profiles/
+/desktop_state/

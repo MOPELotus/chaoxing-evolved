@@ -21,6 +21,7 @@ from api.logger import logger
 from api.notification import Notification
 from api.live import Live
 from api.live_process import LiveProcessor
+from api.runtime import configure_runtime
 
 class ChapterResult(enum.Enum):
     SUCCESS=0,
@@ -59,6 +60,12 @@ def parse_args():
     parser.add_argument(
         "-c", "--config", type=str, default=None, help="使用配置文件运行程序"
     )
+    parser.add_argument(
+        "--cookies-file", type=str, default=None, help="自定义当前实例的 cookies 存储路径"
+    )
+    parser.add_argument(
+        "--cache-file", type=str, default=None, help="自定义当前实例的题库缓存路径"
+    )
     parser.add_argument("-u", "--username", type=str, default=None, help="手机号账号")
     parser.add_argument("-p", "--password", type=str, default=None, help="登录密码")
     parser.add_argument(
@@ -92,8 +99,20 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_config_from_file(config_path):
+def finalize_runtime(common_config: dict[str, Any], config_path: str | None, args) -> None:
+    runtime_context = configure_runtime(
+        config_path=config_path,
+        cookies_path=args.cookies_file or common_config.get("cookies_path"),
+        cache_path=args.cache_file or common_config.get("cache_path"),
+    )
+    common_config["config_path"] = str(runtime_context.config_path)
+    common_config["cookies_path"] = str(runtime_context.cookies_path)
+    common_config["cache_path"] = str(runtime_context.cache_path)
+
+
+def load_config_from_file(config_path, args):
     """从配置文件加载设置"""
+    configure_runtime(config_path=config_path)
     config = configparser.ConfigParser()
     config.read(config_path, encoding="utf8")
     
@@ -121,6 +140,10 @@ def load_config_from_file(config_path):
             common_config["username"] = common_config["username"].strip()
         if "password" in common_config and common_config["password"] is not None:
             common_config["password"] = common_config["password"].strip()
+        if "cookies_path" in common_config and common_config["cookies_path"] is not None:
+            common_config["cookies_path"] = common_config["cookies_path"].strip()
+        if "cache_path" in common_config and common_config["cache_path"] is not None:
+            common_config["cache_path"] = common_config["cache_path"].strip()
 
     # 检查并读取tiku节
     if config.has_section("tiku"):
@@ -133,6 +156,8 @@ def load_config_from_file(config_path):
     # 检查并读取notification节
     if config.has_section("notification"):
         notification_config = dict(config.items("notification"))
+
+    finalize_runtime(common_config, config_path, args)
     
     return common_config, tiku_config, notification_config
 
@@ -146,8 +171,9 @@ def build_config_from_args(args):
         "course_list": [item.strip() for item in args.list.split(",") if item.strip()] if args.list else None,
         "speed": args.speed if args.speed else 1.0,
         "jobs": args.jobs,
-        "notopen_action": args.notopen_action if args.notopen_action else "retry"
+        "notopen_action": args.notopen_action if args.notopen_action else "retry",
     }
+    finalize_runtime(common_config, args.config, args)
     return common_config, {}, {}
 
 
@@ -156,7 +182,7 @@ def init_config():
     args = parse_args()
     
     if args.config:
-        return load_config_from_file(args.config)
+        return load_config_from_file(args.config, args)
     else:
         return build_config_from_args(args)
 
@@ -182,20 +208,17 @@ def init_chaoxing(common_config, tiku_config):
     
     # 获取查询延迟设置
     
-    # 检查大模型连接（如果使用的是大模型题库）
-    # 根据配置文件中的 provider 判断是否为大模型题库
-    provider = tiku_config.get('provider', '')
-    if provider in ['AI', 'SiliconFlow']:
-        check_connection = tiku_config.get('check_llm_connection', 'true').lower() == 'true'
-        if check_connection:
-            logger.info(f'正在验证大模型配置 (provider={provider})...')
-            if not tiku.check_llm_connection():
-                logger.error('大模型连接检查失败')
-                choice = input('大模型连接检查失败，无法准确答题，是否继续运行？(Y/n): ').strip().lower()
-                # 直接回车默认继续运行
-                if choice not in ('', 'y', 'yes'):
-                    raise RuntimeError('用户取消运行')
-                logger.info('用户选择继续运行...')
+    # 检查大模型连接（单题库/多题库统一走题库对象自身的检查逻辑）
+    check_connection = tiku_config.get('check_llm_connection', 'true').lower() == 'true'
+    if check_connection:
+        logger.info('正在验证题库连接配置...')
+        if not tiku.check_llm_connection():
+            logger.error('题库连接检查失败')
+            choice = input('题库连接检查失败，无法准确答题，是否继续运行？(Y/n): ').strip().lower()
+            # 直接回车默认继续运行
+            if choice not in ('', 'y', 'yes'):
+                raise RuntimeError('用户取消运行')
+            logger.info('用户选择继续运行...')
 
     query_delay = tiku_config.get("delay", 0)
     
