@@ -15,7 +15,6 @@ from PyQt5.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QListWidgetItem,
-    QScrollArea,
     QSplitter,
     QStyle,
     QSystemTrayIcon,
@@ -53,6 +52,7 @@ with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.St
         SubtitleLabel,
         TitleLabel,
         TransparentPushButton,
+        SmoothScrollArea,
     )
 
 from api.json_store import (
@@ -99,6 +99,79 @@ STATUS_LABELS = {
     "stopped": "已停止",
     "idle": "未启动",
 }
+FLUENT_SURFACE_STYLE = """
+QScrollBar:vertical {
+    background: transparent;
+    width: 14px;
+    margin: 6px 2px 6px 2px;
+}
+QScrollBar::handle:vertical {
+    min-height: 48px;
+    background: rgba(96, 104, 118, 0.36);
+    border-radius: 5px;
+}
+QScrollBar::handle:vertical:hover {
+    background: rgba(76, 86, 102, 0.48);
+}
+QScrollBar::handle:vertical:pressed {
+    background: rgba(57, 67, 82, 0.60);
+}
+QScrollBar::add-line:vertical,
+QScrollBar::sub-line:vertical,
+QScrollBar::add-page:vertical,
+QScrollBar::sub-page:vertical {
+    height: 0;
+    background: transparent;
+}
+QScrollBar:horizontal {
+    background: transparent;
+    height: 14px;
+    margin: 2px 6px 2px 6px;
+}
+QScrollBar::handle:horizontal {
+    min-width: 48px;
+    background: rgba(96, 104, 118, 0.36);
+    border-radius: 5px;
+}
+QScrollBar::handle:horizontal:hover {
+    background: rgba(76, 86, 102, 0.48);
+}
+QScrollBar::handle:horizontal:pressed {
+    background: rgba(57, 67, 82, 0.60);
+}
+QScrollBar::add-line:horizontal,
+QScrollBar::sub-line:horizontal,
+QScrollBar::add-page:horizontal,
+QScrollBar::sub-page:horizontal {
+    width: 0;
+    background: transparent;
+}
+QSplitter::handle {
+    background: transparent;
+}
+QSplitter::handle:horizontal {
+    margin: 10px 0;
+    width: 10px;
+    border-radius: 5px;
+}
+QSplitter::handle:horizontal:hover {
+    background: rgba(0, 120, 212, 0.12);
+}
+QSplitter::handle:horizontal:pressed {
+    background: rgba(0, 120, 212, 0.18);
+}
+QSplitter::handle:vertical {
+    margin: 0 10px;
+    height: 10px;
+    border-radius: 5px;
+}
+QSplitter::handle:vertical:hover {
+    background: rgba(0, 120, 212, 0.12);
+}
+QSplitter::handle:vertical:pressed {
+    background: rgba(0, 120, 212, 0.18);
+}
+"""
 
 
 def split_csv(text: str) -> list[str]:
@@ -239,6 +312,14 @@ def make_override_field(label: str, widget: QWidget, toggle: CheckBox, hint: str
 
     layout.addWidget(widget)
     return container
+
+
+def make_scroll_area(parent: QWidget | None = None) -> SmoothScrollArea:
+    scroll = SmoothScrollArea(parent)
+    scroll.setWidgetResizable(True)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    scroll.setFrameShape(QFrame.NoFrame)
+    return scroll
 
 
 class PageFrame(QFrame):
@@ -642,10 +723,7 @@ class HomePage(PageFrame):
         self.run_manager.runs_changed.connect(self.refresh_dashboard)
         self.run_manager.log_received.connect(self.on_log_received)
 
-        self.scroll = QScrollArea(self)
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setFrameShape(QFrame.NoFrame)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll = make_scroll_area(self)
         self.root_layout.addWidget(self.scroll, 1)
 
         self.scroll_content = QWidget(self.scroll)
@@ -899,10 +977,7 @@ class ProfileEditorPanel(QWidget):
         header_layout.addWidget(self.delete_button)
         self.root_layout.addWidget(header)
 
-        self.scroll = QScrollArea(self)
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll = make_scroll_area(self)
         self.root_layout.addWidget(self.scroll, 1)
 
         self.scroll_content = QWidget(self.scroll)
@@ -1930,6 +2005,8 @@ class ProfilesPage(PageFrame):
         self.profile_cards: dict[str, ProfileListCard] = {}
 
         splitter = QSplitter(Qt.Horizontal, self)
+        splitter.setHandleWidth(10)
+        splitter.setChildrenCollapsible(False)
         self.root_layout.addWidget(splitter, 1)
 
         left_panel = QWidget(splitter)
@@ -2299,10 +2376,7 @@ class GlobalSettingsPage(PageFrame):
         header_row.addStretch(1)
         self.root_layout.addLayout(header_row)
 
-        self.scroll = QScrollArea(self)
-        self.scroll.setWidgetResizable(True)
-        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll = make_scroll_area(self)
         self.root_layout.addWidget(self.scroll, 1)
 
         content = QWidget(self.scroll)
@@ -2630,6 +2704,7 @@ class DesktopMainWindow(MSFluentWindow):
         super().__init__()
         self.setWindowTitle(APP_TITLE)
         self.resize(1480, 980)
+        self.setStyleSheet(FLUENT_SURFACE_STYLE)
 
         ensure_desktop_state()
         self.run_manager = RunManager(self)
