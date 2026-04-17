@@ -55,7 +55,6 @@ with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.St
 from api.json_store import (
     DEFAULT_GLOBAL_SETTINGS,
     DEFAULT_PROFILE,
-    bootstrap_json_profiles_from_legacy,
     create_json_profile,
     delete_json_profile,
     ensure_desktop_state,
@@ -1655,10 +1654,8 @@ class ProfilesPage(PageFrame):
 
         action_row = QHBoxLayout()
         action_row.setSpacing(8)
-        self.import_button = PushButton("导入旧版 INI", left_panel)
         self.create_button = PrimaryPushButton("新建配置", left_panel)
         self.refresh_button = PushButton("重新载入列表", left_panel)
-        action_row.addWidget(self.import_button)
         action_row.addWidget(self.create_button)
         action_row.addWidget(self.refresh_button)
         left_layout.addLayout(action_row)
@@ -1704,7 +1701,6 @@ class ProfilesPage(PageFrame):
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([340, 1040])
 
-        self.import_button.clicked.connect(self.import_profiles)
         self.create_button.clicked.connect(self.create_profile)
         self.refresh_button.clicked.connect(self.refresh_profiles)
         self.search_edit.textChanged.connect(self.refresh_profiles)
@@ -1832,15 +1828,6 @@ class ProfilesPage(PageFrame):
 
     def _checked_names(self) -> list[str]:
         return [path.stem for path in list_json_profiles() if path.stem in self.checked_profiles]
-
-    def import_profiles(self) -> None:
-        imported = bootstrap_json_profiles_from_legacy()
-        if imported:
-            self.refresh_profiles(select_name=imported[0]["name"])
-            self._notify_profiles_changed()
-            show_bar(self, "success", "导入完成", f"已迁移 {len(imported)} 个旧版 INI 配置。")
-        else:
-            show_bar(self, "info", "无需导入", "未发现需要迁移的旧版 INI 配置。")
 
     def create_profile(self) -> None:
         dialog = TextInputDialog(
@@ -2264,7 +2251,6 @@ class DesktopMainWindow(MSFluentWindow):
         self.resize(1480, 980)
 
         ensure_desktop_state()
-        bootstrap_json_profiles_from_legacy()
         self.run_manager = RunManager(self)
 
         self.home_page = HomePage(self.run_manager, self)

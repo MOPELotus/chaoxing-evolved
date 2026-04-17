@@ -152,5 +152,4 @@ config*.ini
 cache.json
 *.cookies.txt
 *.cache.json
-/profiles/
 /desktop_state/

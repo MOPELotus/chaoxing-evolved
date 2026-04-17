@@ -11,7 +11,6 @@ DESKTOP_STATE_DIR = PROJECT_ROOT / "desktop_state"
 JSON_PROFILE_DIR = DESKTOP_STATE_DIR / "profiles"
 RUNTIME_CONFIG_DIR = DESKTOP_STATE_DIR / "runtime_configs"
 GLOBAL_SETTINGS_PATH = DESKTOP_STATE_DIR / "global_settings.json"
-LEGACY_PROFILE_DIR = PROJECT_ROOT / "profiles"
 
 CURRENT_SCHEMA_VERSION = 1
 
@@ -284,90 +283,6 @@ def write_runtime_ini(profile: dict, global_settings: dict | None = None) -> Pat
     with runtime_path.open("w", encoding="utf8") as fp:
         config.write(fp)
     return runtime_path
-
-
-def load_ini_profile(path: Path) -> dict:
-    parser = configparser.ConfigParser()
-    parser.read(path, encoding="utf8")
-
-    profile = deepcopy(DEFAULT_PROFILE)
-    profile["name"] = path.stem
-    common = dict(parser.items("common")) if parser.has_section("common") else {}
-    tiku = dict(parser.items("tiku")) if parser.has_section("tiku") else {}
-    notification = dict(parser.items("notification")) if parser.has_section("notification") else {}
-
-    profile["common"].update(
-        {
-            "use_cookies": common.get("use_cookies", "false").lower() == "true",
-            "cookies_path": common.get("cookies_path", ""),
-            "cache_path": common.get("cache_path", ""),
-            "username": common.get("username", ""),
-            "password": common.get("password", ""),
-            "course_list": [item.strip() for item in common.get("course_list", "").split(",") if item.strip()],
-            "speed": float(common.get("speed", 1.0)),
-            "jobs": int(common.get("jobs", 4)),
-            "notopen_action": common.get("notopen_action", "retry"),
-        }
-    )
-
-    profile["tiku"].update(
-        {
-            "provider": tiku.get("provider", profile["tiku"]["provider"]),
-            "providers": [item.strip() for item in tiku.get("providers", "").split(",") if item.strip()],
-            "decision_provider": tiku.get("decision_provider", profile["tiku"]["decision_provider"]),
-            "check_llm_connection": tiku.get("check_llm_connection", "true").lower() == "true",
-            "submit": tiku.get("submit", "false").lower() == "true",
-            "cover_rate": float(tiku.get("cover_rate", 0.9)),
-            "delay": float(tiku.get("delay", 1.0)),
-            "tokens": tiku.get("tokens", ""),
-            "likeapi_search": tiku.get("likeapi_search", "false").lower() == "true",
-            "likeapi_vision": tiku.get("likeapi_vision", "true").lower() == "true",
-            "likeapi_model": tiku.get("likeapi_model", profile["tiku"]["likeapi_model"]),
-            "likeapi_retry": tiku.get("likeapi_retry", "true").lower() == "true",
-            "likeapi_retry_times": int(tiku.get("likeapi_retry_times", 3)),
-            "url": tiku.get("url", ""),
-            "endpoint": tiku.get("endpoint", ""),
-            "key": tiku.get("key", ""),
-            "model": tiku.get("model", ""),
-            "min_interval_seconds": int(tiku.get("min_interval_seconds", 3)),
-            "http_proxy": tiku.get("http_proxy", ""),
-            "siliconflow_key": tiku.get("siliconflow_key", ""),
-            "siliconflow_model": tiku.get("siliconflow_model", profile["tiku"]["siliconflow_model"]),
-            "siliconflow_endpoint": tiku.get("siliconflow_endpoint", profile["tiku"]["siliconflow_endpoint"]),
-            "true_list": [item.strip() for item in tiku.get("true_list", "").split(",") if item.strip()] or profile["tiku"]["true_list"],
-            "false_list": [item.strip() for item in tiku.get("false_list", "").split(",") if item.strip()] or profile["tiku"]["false_list"],
-        }
-    )
-
-    profile["notification"].update(
-        {
-            "provider": notification.get("provider", ""),
-            "url": notification.get("url", ""),
-            "tg_chat_id": notification.get("tg_chat_id", ""),
-        }
-    )
-    return profile
-
-
-def import_legacy_ini_profile(path: Path, force: bool = False) -> dict:
-    profile = load_ini_profile(path)
-    create_json_profile(profile["name"], force=force)
-    save_json_profile(profile)
-    return profile
-
-
-def bootstrap_json_profiles_from_legacy(force: bool = False) -> list[dict]:
-    ensure_desktop_state()
-    imported_profiles = []
-    if not LEGACY_PROFILE_DIR.exists():
-        return imported_profiles
-
-    for ini_path in sorted(LEGACY_PROFILE_DIR.glob("*.ini")):
-        json_path = profile_json_path(ini_path.stem)
-        if json_path.exists() and not force:
-            continue
-        imported_profiles.append(import_legacy_ini_profile(ini_path, force=True))
-    return imported_profiles
 
 
 def profile_summary(profile: dict, global_settings: dict | None = None) -> dict:
