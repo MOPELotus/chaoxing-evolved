@@ -24,9 +24,11 @@ from api.json_store import (
 from api.logger import logger
 from api.notification import NotificationFactory
 from api.runtime import configure_runtime
+from desktop.worker import WORKER_FLAG
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DESKTOP_APP_ENTRY = PROJECT_ROOT / "desktop_app.py"
 ANSI_PATTERN = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 PROFILE_IO_LOCK = threading.RLock()
 RUN_LOG_DIR = PROJECT_ROOT / "desktop_state" / "logs"
@@ -73,6 +75,18 @@ def _build_run_log_path(profile_name: str, started_at: float, run_id: str) -> Pa
     return profile_dir / f"{date_prefix}-{run_id}.log"
 
 
+def _is_compiled_desktop_app() -> bool:
+    if getattr(sys, "frozen", False):
+        return True
+    if "__compiled__" in globals():
+        return True
+
+    try:
+        return Path(sys.executable).resolve() == Path(sys.argv[0]).resolve()
+    except OSError:
+        return False
+
+
 @dataclass
 class DesktopRunState:
     id: str
@@ -100,7 +114,9 @@ class RunManager(QObject):
         self._lock = threading.RLock()
 
     def _build_command(self, profile_name: str) -> list[str]:
-        return [sys.executable, "-m", "desktop.worker", profile_name]
+        if _is_compiled_desktop_app():
+            return [sys.executable, WORKER_FLAG, profile_name]
+        return [sys.executable, str(DESKTOP_APP_ENTRY), WORKER_FLAG, profile_name]
 
     def list_runs(self) -> list[DesktopRunState]:
         with self._lock:
