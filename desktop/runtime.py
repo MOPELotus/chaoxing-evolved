@@ -156,6 +156,22 @@ class RunManager(QObject):
             return ""
         return "\n".join(run_state.logs)
 
+    def remove_profile_state(self, profile_name: str, stop_running: bool = True) -> None:
+        run_state = self.get_run(profile_name)
+        if run_state and run_state.status == "running":
+            if not stop_running:
+                raise ValueError(f"{profile_name} 仍在运行中")
+            self.stop_profile(profile_name)
+
+        removed = False
+        with self._lock:
+            if profile_name in self._runs:
+                self._runs.pop(profile_name, None)
+                removed = True
+
+        if removed:
+            self.runs_changed.emit()
+
 
 def fetch_courses_for_profile(profile_name: str) -> list[dict]:
     with PROFILE_IO_LOCK:

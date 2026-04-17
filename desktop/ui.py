@@ -57,6 +57,7 @@ from api.json_store import (
     DEFAULT_PROFILE,
     bootstrap_json_profiles_from_legacy,
     create_json_profile,
+    delete_json_profile,
     ensure_desktop_state,
     list_json_profiles,
     load_global_settings,
@@ -150,6 +151,21 @@ def show_error(parent: QWidget, title: str, message: str) -> None:
     if hasattr(dialog, "cancelButton"):
         dialog.cancelButton.hide()
     exec_dialog(dialog)
+
+
+def confirm_action(
+    parent: QWidget | None,
+    title: str,
+    message: str,
+    confirm_text: str = "确定",
+    cancel_text: str = "取消",
+) -> bool:
+    dialog = MessageBox(title, message, dialog_parent(parent))
+    if hasattr(dialog, "yesButton"):
+        dialog.yesButton.setText(confirm_text)
+    if hasattr(dialog, "cancelButton"):
+        dialog.cancelButton.setText(cancel_text)
+    return exec_dialog(dialog) == 1
 
 
 def display_status(status: str) -> str:
@@ -781,6 +797,7 @@ class ProfileEditorPanel(QWidget):
     profile_saved = pyqtSignal(str)
     start_requested = pyqtSignal(str)
     stop_requested = pyqtSignal(str)
+    delete_requested = pyqtSignal(str)
 
     def __init__(self, run_manager: RunManager, parent=None) -> None:
         super().__init__(parent)
@@ -816,10 +833,12 @@ class ProfileEditorPanel(QWidget):
         self.save_button = PrimaryPushButton("保存配置", header)
         self.start_button = PushButton("启动当前", header)
         self.stop_button = PushButton("停止当前", header)
+        self.delete_button = PushButton("删除当前", header)
         header_layout.addWidget(self.reload_button)
         header_layout.addWidget(self.save_button)
         header_layout.addWidget(self.start_button)
         header_layout.addWidget(self.stop_button)
+        header_layout.addWidget(self.delete_button)
         self.root_layout.addWidget(header)
 
         self.scroll = QScrollArea(self)
@@ -845,6 +864,7 @@ class ProfileEditorPanel(QWidget):
         self.save_button.clicked.connect(self.save_profile)
         self.start_button.clicked.connect(self._emit_start)
         self.stop_button.clicked.connect(self._emit_stop)
+        self.delete_button.clicked.connect(self._emit_delete)
 
         self.clear_profile()
 
@@ -1141,6 +1161,7 @@ class ProfileEditorPanel(QWidget):
             self.save_button,
             self.start_button,
             self.stop_button,
+            self.delete_button,
             self.use_cookies_check,
             self.username_edit,
             self.password_edit,
@@ -1314,6 +1335,7 @@ class ProfileEditorPanel(QWidget):
             self.profile_state.setText("请选择左侧配置后再进行编辑。")
             self.start_button.setEnabled(False)
             self.stop_button.setEnabled(False)
+            self.delete_button.setEnabled(False)
             return
 
         run_state = self.run_manager.get_run(self._current_profile_name)
@@ -1330,6 +1352,7 @@ class ProfileEditorPanel(QWidget):
         self.profile_state.setText(text)
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(bool(run_state and run_state.status == "running"))
+        self.delete_button.setEnabled(True)
 
     def reload_profile(self) -> None:
         if not self._current_profile_name:
@@ -1601,6 +1624,10 @@ class ProfileEditorPanel(QWidget):
         if self._current_profile_name:
             self.stop_requested.emit(self._current_profile_name)
 
+    def _emit_delete(self) -> None:
+        if self._current_profile_name:
+            self.delete_requested.emit(self._current_profile_name)
+
 
 class ProfilesPage(PageFrame):
     def __init__(self, run_manager: RunManager, on_profiles_changed=None, parent=None) -> None:
@@ -1654,8 +1681,10 @@ class ProfilesPage(PageFrame):
         run_row.setSpacing(8)
         self.batch_start_button = PrimaryPushButton("启动选中项", left_panel)
         self.batch_stop_button = PushButton("停止选中项", left_panel)
+        self.batch_delete_button = PushButton("删除选中项", left_panel)
         run_row.addWidget(self.batch_start_button)
         run_row.addWidget(self.batch_stop_button)
+        run_row.addWidget(self.batch_delete_button)
         left_layout.addLayout(run_row)
 
         self.selection_status = CaptionLabel("已选中 0 个配置。", left_panel)
@@ -1684,10 +1713,12 @@ class ProfilesPage(PageFrame):
         self.clear_select_button.clicked.connect(self.clear_selection)
         self.batch_start_button.clicked.connect(self.start_checked_profiles)
         self.batch_stop_button.clicked.connect(self.stop_checked_profiles)
+        self.batch_delete_button.clicked.connect(self.delete_checked_profiles)
         self.profile_list.currentItemChanged.connect(self._on_current_item_changed)
         self.editor.profile_saved.connect(self._on_profile_saved)
         self.editor.start_requested.connect(self.start_profile)
         self.editor.stop_requested.connect(self.stop_profile)
+        self.editor.delete_requested.connect(self.delete_profile)
 
         self.refresh_profiles()
 
@@ -1831,6 +1862,48 @@ class ProfilesPage(PageFrame):
         self._notify_profiles_changed()
         show_bar(self, "success", "创建成功", f"{profile['name']} 已创建。")
 
+    def _confirm_delete(self, names: list[str]) -> bool:
+        if not names:
+            return False
+
+        running_names = [name for name in names if (self.run_manager.get_run(name) and self.run_manager.get_run(name).status == "running")]
+        detail_lines = [
+            f"将删除 {len(names)} 个配置的 JSON 文件和对应运行时文件。",
+            "此操作不可撤销。",
+        ]
+        if running_names:
+            detail_lines.append(f"其中 {len(running_names)} 个配置正在运行，删除前会先停止任务。")
+        if self.editor.is_dirty and self.editor.current_profile_name in names:
+            detail_lines.append("当前编辑页存在未保存修改，删除后这些修改也会一并丢弃。")
+        return confirm_action(
+            self,
+            "确认删除配置",
+            "\n".join(detail_lines),
+            confirm_text="删除",
+            cancel_text="取消",
+        )
+
+    def _delete_profiles(self, names: list[str], select_next: str | None = None) -> tuple[int, list[str]]:
+        unique_names = [name for name in dict.fromkeys(names) if name]
+        deleted = 0
+        failed_messages: list[str] = []
+
+        for name in unique_names:
+            try:
+                self.run_manager.remove_profile_state(name, stop_running=True)
+                delete_json_profile(name, remove_runtime_state=True)
+                self.checked_profiles.discard(name)
+                deleted += 1
+            except Exception as exc:
+                failed_messages.append(f"{name}: {exc}")
+
+        target_name = select_next
+        if target_name in unique_names:
+            target_name = None
+        self.refresh_profiles(select_name=target_name)
+        self._notify_profiles_changed()
+        return deleted, failed_messages
+
     def start_checked_profiles(self) -> None:
         names = self._checked_names()
         if not names:
@@ -1871,6 +1944,27 @@ class ProfilesPage(PageFrame):
         self.refresh_run_context()
         show_bar(self, "success", "批量停止完成", f"已停止 {stopped} 个，跳过 {skipped} 个。")
 
+    def delete_checked_profiles(self) -> None:
+        names = self._checked_names()
+        if not names:
+            show_bar(self, "warning", "未选择配置", "请先在左侧列表中选择要删除的配置。")
+            return
+        if not self._confirm_delete(names):
+            return
+
+        current_name = self.editor.current_profile_name
+        deleted, failed_messages = self._delete_profiles(names, select_next=current_name)
+        if failed_messages:
+            show_bar(
+                self,
+                "warning",
+                "批量删除已完成",
+                f"已删除 {deleted} 个。失败：{'；'.join(failed_messages[:3])}",
+                duration=5000,
+            )
+            return
+        show_bar(self, "success", "批量删除已完成", f"已删除 {deleted} 个配置。")
+
     def start_profile(self, profile_name: str) -> None:
         try:
             self.run_manager.start_profile(profile_name)
@@ -1888,6 +1982,18 @@ class ProfilesPage(PageFrame):
             return
         self.refresh_run_context()
         show_bar(self, "success", "停止成功", f"{profile_name} 已停止。")
+
+    def delete_profile(self, profile_name: str) -> None:
+        if not profile_name:
+            return
+        if not self._confirm_delete([profile_name]):
+            return
+
+        deleted, failed_messages = self._delete_profiles([profile_name])
+        if failed_messages:
+            show_error(self, "删除失败", failed_messages[0])
+            return
+        show_bar(self, "success", "删除成功", f"{profile_name} 已删除。")
 
     def refresh_run_context(self) -> None:
         self.refresh_profiles(

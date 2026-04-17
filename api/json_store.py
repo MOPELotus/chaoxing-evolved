@@ -125,6 +125,21 @@ def profile_json_path(name: str) -> Path:
     return JSON_PROFILE_DIR / f"{safe_name}.json"
 
 
+def runtime_ini_path(name: str) -> Path:
+    ensure_desktop_state()
+    safe_name = sanitize_profile_name(name)
+    return RUNTIME_CONFIG_DIR / f"{safe_name}.ini"
+
+
+def runtime_sidecar_paths(name: str) -> list[Path]:
+    runtime_path = runtime_ini_path(name)
+    return [
+        runtime_path,
+        runtime_path.with_suffix(".cookies.txt"),
+        runtime_path.with_suffix(".cache.json"),
+    ]
+
+
 def list_json_profiles() -> list[Path]:
     ensure_desktop_state()
     return sorted(JSON_PROFILE_DIR.glob("*.json"))
@@ -185,6 +200,22 @@ def save_json_profile(profile: dict) -> Path:
     payload = _deep_merge(DEFAULT_PROFILE, profile)
     payload["name"] = profile_name
     return save_json_file(profile_json_path(profile_name), payload)
+
+
+def delete_json_profile(name: str, remove_runtime_state: bool = True) -> list[Path]:
+    ensure_desktop_state()
+    profile_name = sanitize_profile_name(name)
+    deleted_paths: list[Path] = []
+
+    targets = [profile_json_path(profile_name)]
+    if remove_runtime_state:
+        targets.extend(runtime_sidecar_paths(profile_name))
+
+    for path in targets:
+        if path.exists():
+            path.unlink()
+            deleted_paths.append(path)
+    return deleted_paths
 
 
 def _bool_to_ini(value: object) -> str:
