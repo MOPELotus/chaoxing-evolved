@@ -27,8 +27,10 @@ with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.St
         CheckBox,
         ComboBox,
         DoubleSpinBox,
+        DisplayLabel,
         FluentIcon,
         FlowLayout,
+        HorizontalSeparator,
         InfoBar,
         InfoBarPosition,
         LargeTitleLabel,
@@ -46,6 +48,7 @@ with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.St
         SpinBox,
         StrongBodyLabel,
         SubtitleLabel,
+        TitleLabel,
         TransparentPushButton,
     )
 
@@ -201,6 +204,162 @@ class SectionCard(CardWidget):
         self.body_layout = QVBoxLayout()
         self.body_layout.setSpacing(12)
         layout.addLayout(self.body_layout)
+
+
+class SectionHeader(QWidget):
+    def __init__(self, title: str, description: str = "", parent=None) -> None:
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(12)
+        self.title_label = TitleLabel(title, self)
+        title_row.addWidget(self.title_label)
+        title_row.addWidget(HorizontalSeparator(self), 1)
+        layout.addLayout(title_row)
+
+        if description:
+            self.description_label = CaptionLabel(description, self)
+            self.description_label.setWordWrap(True)
+            layout.addWidget(self.description_label)
+
+
+class MetricTile(CardWidget):
+    def __init__(self, title: str, accent_color: str, parent=None) -> None:
+        super().__init__(parent)
+        self.setMinimumHeight(156)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(8)
+
+        accent_bar = QFrame(self)
+        accent_bar.setFixedHeight(4)
+        accent_bar.setStyleSheet(f"background-color: {accent_color}; border-radius: 2px;")
+        layout.addWidget(accent_bar)
+
+        self.title_label = CaptionLabel(title, self)
+        self.value_label = DisplayLabel("0", self)
+        self.detail_label = BodyLabel("", self)
+        self.detail_label.setWordWrap(True)
+
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.value_label)
+        layout.addWidget(self.detail_label)
+        layout.addStretch(1)
+
+    def set_metric(self, value: str, detail: str) -> None:
+        self.value_label.setText(str(value))
+        self.detail_label.setText(detail)
+
+
+class DashboardHeroCard(CardWidget):
+    refresh_requested = pyqtSignal()
+    manage_requested = pyqtSignal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("dashboardHeroCard")
+        self.setStyleSheet(
+            """
+            QWidget#dashboardHeroCard {
+                border: 1px solid rgba(0, 120, 212, 0.18);
+                border-radius: 22px;
+                background: qlineargradient(
+                    x1: 0, y1: 0, x2: 1, y2: 1,
+                    stop: 0 rgba(245, 250, 255, 255),
+                    stop: 0.6 rgba(255, 255, 255, 255),
+                    stop: 1 rgba(244, 248, 252, 255)
+                );
+            }
+            QFrame#dashboardHeroBadge {
+                background-color: rgba(0, 120, 212, 0.09);
+                border: 1px solid rgba(0, 120, 212, 0.18);
+                border-radius: 12px;
+            }
+            QLabel#dashboardHeroBadgeText {
+                color: rgb(0, 90, 158);
+                font-weight: 600;
+            }
+            QFrame#dashboardHeroSidePanel {
+                background-color: rgba(255, 255, 255, 0.82);
+                border: 1px solid rgba(15, 23, 42, 0.08);
+                border-radius: 18px;
+            }
+            """
+        )
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(26, 24, 26, 24)
+        layout.setSpacing(24)
+
+        left_widget = QWidget(self)
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(10)
+
+        badge = QFrame(left_widget)
+        badge.setObjectName("dashboardHeroBadge")
+        badge_layout = QHBoxLayout(badge)
+        badge_layout.setContentsMargins(12, 6, 12, 6)
+        badge_layout.setSpacing(0)
+        badge_label = CaptionLabel("桌面控制台", badge)
+        badge_label.setObjectName("dashboardHeroBadgeText")
+        badge_layout.addWidget(badge_label)
+        left_layout.addWidget(badge, 0, Qt.AlignLeft)
+
+        self.title_label = LargeTitleLabel(APP_TITLE, left_widget)
+        self.subtitle_label = BodyLabel("统一管理配置、全局凭据与实时运行状态。", left_widget)
+        self.subtitle_label.setWordWrap(True)
+        self.description_label = CaptionLabel("首页提供概况、关键指标和按配置分区的日志监控视图。", left_widget)
+        self.description_label.setWordWrap(True)
+        left_layout.addWidget(self.title_label)
+        left_layout.addWidget(self.subtitle_label)
+        left_layout.addWidget(self.description_label)
+
+        action_row = QHBoxLayout()
+        action_row.setContentsMargins(0, 4, 0, 0)
+        action_row.setSpacing(10)
+        self.refresh_button = PrimaryPushButton("刷新主页", left_widget)
+        self.manage_button = TransparentPushButton("前往配置管理", left_widget)
+        action_row.addWidget(self.refresh_button)
+        action_row.addWidget(self.manage_button)
+        action_row.addStretch(1)
+        left_layout.addLayout(action_row)
+
+        side_panel = QFrame(self)
+        side_panel.setObjectName("dashboardHeroSidePanel")
+        side_layout = QVBoxLayout(side_panel)
+        side_layout.setContentsMargins(18, 18, 18, 18)
+        side_layout.setSpacing(8)
+        side_panel.setMinimumWidth(300)
+
+        self.status_eyebrow = CaptionLabel("系统状态", side_panel)
+        self.status_title = TitleLabel("已就绪", side_panel)
+        self.status_body = BodyLabel("当前环境可继续进行配置与任务管理。", side_panel)
+        self.status_body.setWordWrap(True)
+        self.status_note = CaptionLabel("运行状态变化后，首页将自动同步更新。", side_panel)
+        self.status_note.setWordWrap(True)
+        side_layout.addWidget(self.status_eyebrow)
+        side_layout.addWidget(self.status_title)
+        side_layout.addWidget(self.status_body)
+        side_layout.addStretch(1)
+        side_layout.addWidget(HorizontalSeparator(side_panel))
+        side_layout.addWidget(self.status_note)
+
+        layout.addWidget(left_widget, 1)
+        layout.addWidget(side_panel, 0)
+
+        self.refresh_button.clicked.connect(self.refresh_requested.emit)
+        self.manage_button.clicked.connect(self.manage_requested.emit)
+
+    def set_status(self, title: str, body: str, note: str) -> None:
+        self.status_title.setText(title)
+        self.status_body.setText(body)
+        self.status_note.setText(note)
 
 
 class ChipPanel(QWidget):
@@ -403,34 +562,14 @@ class HomePage(PageFrame):
             "查看配置概况、数据目录与各配置的实时运行日志。",
             parent,
         )
+        self.title_label.hide()
+        if hasattr(self, "description_label"):
+            self.description_label.hide()
+
         self.run_manager = run_manager
         self.cards: dict[str, LogCard] = {}
         self.run_manager.runs_changed.connect(self.refresh_dashboard)
         self.run_manager.log_received.connect(self.on_log_received)
-
-        summary_card = SectionCard("运行概况", parent=self)
-        self.summary_label = BodyLabel(self)
-        self.summary_label.setWordWrap(True)
-        summary_card.body_layout.addWidget(self.summary_label)
-        self.root_layout.addWidget(summary_card)
-
-        path_card = SectionCard("数据目录", "桌面端的配置、全局设置与运行时文件统一保存在 desktop_state 目录。", parent=self)
-        self.path_label = BodyLabel(self)
-        self.path_label.setWordWrap(True)
-        path_card.body_layout.addWidget(self.path_label)
-        self.root_layout.addWidget(path_card)
-
-        refresh_row = QHBoxLayout()
-        refresh_row.setSpacing(12)
-        self.refresh_button = PrimaryPushButton("刷新状态", self)
-        self.refresh_button.clicked.connect(self.refresh_dashboard)
-        refresh_row.addWidget(self.refresh_button)
-        refresh_row.addStretch(1)
-        self.root_layout.addLayout(refresh_row)
-
-        self.empty_label = CaptionLabel("暂无配置。请先在“配置管理”页面创建或导入配置。", self)
-        self.empty_label.setWordWrap(True)
-        self.root_layout.addWidget(self.empty_label)
 
         self.scroll = QScrollArea(self)
         self.scroll.setWidgetResizable(True)
@@ -438,17 +577,90 @@ class HomePage(PageFrame):
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.root_layout.addWidget(self.scroll, 1)
 
-        self.log_host = QWidget(self.scroll)
+        self.scroll_content = QWidget(self.scroll)
+        self.scroll_content.setObjectName("homeScrollContent")
+        self.scroll_content.setStyleSheet(
+            """
+            QWidget#homeScrollContent QLabel {
+                color: rgb(31, 41, 55);
+                background: transparent;
+            }
+            """
+        )
+        self.content_layout = QVBoxLayout(self.scroll_content)
+        self.content_layout.setContentsMargins(0, 0, 4, 14)
+        self.content_layout.setSpacing(20)
+        self.scroll.setWidget(self.scroll_content)
+
+        self.hero_card = DashboardHeroCard(self.scroll_content)
+        self.hero_card.refresh_requested.connect(self.refresh_dashboard)
+        self.hero_card.manage_requested.connect(self.open_profiles_page)
+        self.content_layout.addWidget(self.hero_card)
+
+        self.metrics_widget = QWidget(self.scroll_content)
+        self.metrics_layout = QGridLayout(self.metrics_widget)
+        self.metrics_layout.setContentsMargins(0, 0, 0, 0)
+        self.metrics_layout.setHorizontalSpacing(14)
+        self.metrics_layout.setVerticalSpacing(14)
+        self.total_tile = MetricTile("配置总数", "#0078D4", self.metrics_widget)
+        self.running_tile = MetricTile("运行中", "#0F9D58", self.metrics_widget)
+        self.finished_tile = MetricTile("最近完成", "#C58B00", self.metrics_widget)
+        self.attention_tile = MetricTile("需关注", "#D13438", self.metrics_widget)
+        metric_tiles = [self.total_tile, self.running_tile, self.finished_tile, self.attention_tile]
+        for index, tile in enumerate(metric_tiles):
+            self.metrics_layout.addWidget(tile, 0, index)
+            self.metrics_layout.setColumnStretch(index, 1)
+        self.content_layout.addWidget(self.metrics_widget)
+
+        self.overview_header = SectionHeader("运行概况", "从整体视角查看题库分布与本地数据目录。", self.scroll_content)
+        self.content_layout.addWidget(self.overview_header)
+
+        self.overview_widget = QWidget(self.scroll_content)
+        self.overview_layout = QGridLayout(self.overview_widget)
+        self.overview_layout.setContentsMargins(0, 0, 0, 0)
+        self.overview_layout.setHorizontalSpacing(14)
+        self.overview_layout.setVerticalSpacing(14)
+
+        summary_card = SectionCard("题库分布", "快速确认当前配置所使用的题库构成。", parent=self.overview_widget)
+        self.summary_label = BodyLabel(summary_card)
+        self.summary_label.setWordWrap(True)
+        summary_card.body_layout.addWidget(self.summary_label)
+
+        path_card = SectionCard("数据目录", "配置、全局设置和运行文件均位于当前工作区。", parent=self.overview_widget)
+        self.path_label = BodyLabel(path_card)
+        self.path_label.setWordWrap(True)
+        path_card.body_layout.addWidget(self.path_label)
+
+        self.overview_layout.addWidget(summary_card, 0, 0)
+        self.overview_layout.addWidget(path_card, 0, 1)
+        self.overview_layout.setColumnStretch(0, 1)
+        self.overview_layout.setColumnStretch(1, 1)
+        self.content_layout.addWidget(self.overview_widget)
+
+        self.logs_header = SectionHeader("运行监控", "按配置展示独立日志卡片，便于同时观察多个任务。", self.scroll_content)
+        self.content_layout.addWidget(self.logs_header)
+
+        self.empty_label = CaptionLabel("暂无配置。请先在“配置管理”页面创建或导入配置。", self.scroll_content)
+        self.empty_label.setWordWrap(True)
+        self.content_layout.addWidget(self.empty_label)
+
+        self.log_host = QWidget(self.scroll_content)
         self.log_layout = QVBoxLayout(self.log_host)
-        self.log_layout.setContentsMargins(0, 0, 4, 12)
+        self.log_layout.setContentsMargins(0, 0, 0, 0)
         self.log_layout.setSpacing(14)
-        self.scroll.setWidget(self.log_host)
+        self.content_layout.addWidget(self.log_host)
+        self.content_layout.addStretch(1)
 
         self.refresh_dashboard()
 
     def refresh_dashboard(self) -> None:
         self.refresh_summary()
         self.refresh_cards()
+
+    def open_profiles_page(self) -> None:
+        window = self.window()
+        if hasattr(window, "switchTo") and hasattr(window, "profiles_page"):
+            window.switchTo(window.profiles_page)
 
     def refresh_summary(self) -> None:
         names = [path.stem for path in list_json_profiles()]
@@ -467,19 +679,40 @@ class HomePage(PageFrame):
         if not provider_lines:
             provider_lines = "- 暂无配置"
 
-        self.summary_label.setText(
-            "\n".join(
-                [
-                    f"配置数量：{len(names)}",
-                    f"正在运行：{running_count}",
-                    f"最近完成：{finished_count}",
-                    f"停止或失败：{failed_count}",
-                    "",
-                    "题库分布：",
-                    provider_lines,
-                ]
-            )
-        )
+        if not names:
+            hero_title = "尚未建立配置"
+            hero_body = "请先创建或导入配置，随后即可在首页查看运行概况与日志监控。"
+            hero_note = "配置建立后，首页会自动生成关键指标卡片和日志区域。"
+        elif failed_count:
+            hero_title = "存在待处理项目"
+            hero_body = f"当前有 {failed_count} 个配置处于停止或失败状态，建议优先查看对应日志。"
+            hero_note = "下方运行监控区域会持续显示各配置的最新输出。"
+        elif running_count:
+            idle_count = max(len(names) - running_count, 0)
+            hero_title = "任务运行中"
+            hero_body = f"当前有 {running_count} 个配置正在执行，另有 {idle_count} 个配置处于待命状态。"
+            hero_note = "运行中的日志卡片会自动滚动到最新输出。"
+        else:
+            hero_title = "系统已就绪"
+            hero_body = f"当前共管理 {len(names)} 个配置，尚未发现需要立即处理的运行异常。"
+            hero_note = "可直接前往配置管理调整参数，或在日志卡片中启动任务。"
+
+        self.hero_card.set_status(hero_title, hero_body, hero_note)
+        self.total_tile.set_metric(str(len(names)), "当前已纳入管理的配置数量。")
+        self.running_tile.set_metric(str(running_count), "正在执行中的配置任务数量。")
+        self.finished_tile.set_metric(str(finished_count), "本轮运行中已完成的任务数量。")
+        attention_detail = "存在已停止或失败的配置任务。" if failed_count else "当前没有失败或中断的任务。"
+        self.attention_tile.set_metric(str(failed_count), attention_detail)
+
+        provider_count = len(providers)
+        summary_lines = [
+            f"题库类型：{provider_count} 种",
+            f"配置总数：{len(names)} 个",
+            "",
+            "分布明细：",
+            provider_lines,
+        ]
+        self.summary_label.setText("\n".join(summary_lines))
         self.path_label.setText(
             "\n".join(
                 [
@@ -518,6 +751,7 @@ class HomePage(PageFrame):
         self.log_layout.addStretch(1)
 
         self.empty_label.setVisible(not bool(names))
+        self.log_host.setVisible(bool(names))
 
     def start_profile(self, profile_name: str) -> None:
         try:
