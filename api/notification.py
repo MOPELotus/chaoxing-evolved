@@ -3,14 +3,12 @@
 支持多种通知服务，如ServerChan、Qmsg和Bark。
 """
 
-import configparser
 from abc import ABC, abstractmethod
 from typing import Dict, Optional
 
 import requests
 
 from api.logger import logger
-from api.runtime import get_runtime_context
 
 
 class NotificationService(ABC):
@@ -38,19 +36,14 @@ class NotificationService(ABC):
 
     def _load_config_from_file(self) -> Optional[Dict[str, str]]:
         """
-        从配置文件中加载通知服务的配置
+        旧版文件配置入口已经移除，未显式传入配置时直接停用通知。
         
         Returns:
             成功返回配置字典，失败返回None
         """
-        try:
-            config = configparser.ConfigParser()
-            config.read(get_runtime_context().config_path, encoding="utf8")
-            return config['notification']
-        except (KeyError, FileNotFoundError):
-            logger.info("未找到notification配置，已忽略外部通知功能")
-            self.disabled = True
-            return None
+        logger.info("未提供通知配置，已忽略外部通知功能")
+        self.disabled = True
+        return None
 
     def init_notification(self) -> None:
         """初始化通知服务，加载配置并进行必要的设置"""

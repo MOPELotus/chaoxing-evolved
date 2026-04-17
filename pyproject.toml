@@ -8,7 +8,7 @@ requires-python = ">=3.13,<4.0"
 dynamic = ["dependencies"]
 
 [tool.setuptools]
-py-modules = ["desktop_app", "main"]
+py-modules = ["desktop_app"]
 
 [tool.setuptools.packages.find]
 include = ["api*", "desktop*"]

@@ -2,14 +2,14 @@
 
 基于 [Samueli924/chaoxing](https://github.com/Samueli924/chaoxing) 的桌面化 fork。
 
-当前仓库已经收敛为 `桌面端 UI + JSON 配置 + 核心刷课逻辑` 的结构，不再保留旧 Web 控制台、INI 模板和旧批量配置脚本。
+当前仓库已经收敛为 `桌面端 UI + JSON 配置 + 核心刷课逻辑` 的结构，不再保留旧 Web 控制台、INI 模板和命令交互入口。
 
 ## 主要特点
 
 - 多账号并行隔离：不同配置自动使用各自独立的 `cookies/cache`
 - 桌面控制台：基于 `PyQt5 + PyQt-Fluent-Widgets`
 - JSON 配置：前台统一使用 `desktop_state/profiles/*.json`
-- 运行时桥接：启动任务时自动生成隐藏的 `desktop_state/runtime_configs/*.ini`
+- 原生运行链路：桌面端直接读取 JSON 配置执行任务
 - 全局设置：题库、AI、通知等默认凭据集中维护
 - 多题库协同：支持 `MultiTiku` 与仲裁题库
 - 课程块选择：刷新课程列表后直接按标签选择课程
@@ -51,15 +51,14 @@ desktop_state/
   profiles/
     user1.json
     user2.json
-  runtime_configs/
-    user1.ini
-    user2.ini
+    user1.cookies.txt
+    user1.cache.json
 ```
 
 说明：
 
 - `profiles/*.json` 是桌面端主配置
-- `runtime_configs/*.ini` 是运行时自动生成的桥接配置
+- `*.cookies.txt` 与 `*.cache.json` 会按配置名自动生成，用于隔离登录状态和题库缓存
 
 ## 使用建议
 
@@ -70,23 +69,9 @@ desktop_state/
 3. 通过课程标签选择课程，通过题库标签选择协同题库
 4. 在 `概览` 页直接查看日志卡片并启动任务
 
-## 命令行入口
-
-核心命令行逻辑仍然保留，可用于直接运行：
-
-```bash
-python main.py -u 手机号 -p 密码 -l 课程ID1,课程ID2
-```
-
-或：
-
-```bash
-python main.py -c 自定义配置文件.ini
-```
-
 ## 与上游的关系
 
-- 上游保留的是命令行刷课主逻辑
+- 上游以命令行刷课流程为主
 - 本 fork 重点补的是桌面控制层、JSON 配置层、多账号隔离和多题库协同
 
 ## 免责声明

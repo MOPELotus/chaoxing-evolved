@@ -641,7 +641,7 @@ class HomePage(PageFrame):
         self.summary_label.setWordWrap(True)
         summary_card.body_layout.addWidget(self.summary_label)
 
-        path_card = SectionCard("数据目录", "配置、全局设置和运行文件均位于当前工作区。", parent=self.overview_widget)
+        path_card = SectionCard("数据目录", "配置、全局设置与运行缓存均位于当前工作区。", parent=self.overview_widget)
         self.path_label = BodyLabel(path_card)
         self.path_label.setWordWrap(True)
         path_card.body_layout.addWidget(self.path_label)
@@ -733,7 +733,7 @@ class HomePage(PageFrame):
                 [
                     f"配置目录：{JSON_PROFILE_DIR}",
                     f"全局设置：{PROJECT_ROOT / 'desktop_state' / 'global_settings.json'}",
-                    f"运行配置：{PROJECT_ROOT / 'desktop_state' / 'runtime_configs'}",
+                    "缓存文件：按配置自动生成在 profiles 目录中",
                 ]
             )
         )
@@ -1340,11 +1340,11 @@ class ProfileEditorPanel(QWidget):
         run_state = self.run_manager.get_run(self._current_profile_name)
         if run_state:
             if run_state.status == "running":
-                text = f"运行中 | 运行配置：{run_state.runtime_config_path}"
+                text = f"运行中 | 配置文件：{run_state.profile_path}"
             else:
-                text = f"状态：{display_status(run_state.status)} | 运行配置：{run_state.runtime_config_path}"
+                text = f"状态：{display_status(run_state.status)} | 配置文件：{run_state.profile_path}"
         else:
-            text = f"JSON 配置：{JSON_PROFILE_DIR / f'{self._current_profile_name}.json'}"
+            text = f"配置文件：{JSON_PROFILE_DIR / f'{self._current_profile_name}.json'}"
 
         if self._dirty:
             text += " | 有未保存修改"
@@ -2212,9 +2212,9 @@ class LogCard(CardWidget):
         run = self.run_manager.get_run(self.profile_name)
         if run:
             status = display_status(run.status)
-            runtime_info = f"运行配置：{run.runtime_config_path}"
+            runtime_info = f"配置文件：{run.profile_path}"
             if run.status == "running":
-                runtime_info += " | 日志实时刷新中"
+                runtime_info += " | 日志实时更新"
         else:
             status = display_status("idle")
             runtime_info = "尚未启动"

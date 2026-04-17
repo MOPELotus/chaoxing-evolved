@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import configparser
 import json
 from copy import deepcopy
 from pathlib import Path
@@ -9,7 +8,6 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DESKTOP_STATE_DIR = PROJECT_ROOT / "desktop_state"
 JSON_PROFILE_DIR = DESKTOP_STATE_DIR / "profiles"
-RUNTIME_CONFIG_DIR = DESKTOP_STATE_DIR / "runtime_configs"
 GLOBAL_SETTINGS_PATH = DESKTOP_STATE_DIR / "global_settings.json"
 
 CURRENT_SCHEMA_VERSION = 1
@@ -96,7 +94,6 @@ DEFAULT_PROFILE = {
 def ensure_desktop_state() -> None:
     DESKTOP_STATE_DIR.mkdir(parents=True, exist_ok=True)
     JSON_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-    RUNTIME_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -124,18 +121,11 @@ def profile_json_path(name: str) -> Path:
     return JSON_PROFILE_DIR / f"{safe_name}.json"
 
 
-def runtime_ini_path(name: str) -> Path:
-    ensure_desktop_state()
-    safe_name = sanitize_profile_name(name)
-    return RUNTIME_CONFIG_DIR / f"{safe_name}.ini"
-
-
-def runtime_sidecar_paths(name: str) -> list[Path]:
-    runtime_path = runtime_ini_path(name)
+def profile_sidecar_paths(name: str) -> list[Path]:
+    profile_path = profile_json_path(name)
     return [
-        runtime_path,
-        runtime_path.with_suffix(".cookies.txt"),
-        runtime_path.with_suffix(".cache.json"),
+        profile_path.with_suffix(".cookies.txt"),
+        profile_path.with_suffix(".cache.json"),
     ]
 
 
@@ -208,7 +198,7 @@ def delete_json_profile(name: str, remove_runtime_state: bool = True) -> list[Pa
 
     targets = [profile_json_path(profile_name)]
     if remove_runtime_state:
-        targets.extend(runtime_sidecar_paths(profile_name))
+        targets.extend(profile_sidecar_paths(profile_name))
 
     for path in targets:
         if path.exists():
@@ -219,6 +209,16 @@ def delete_json_profile(name: str, remove_runtime_state: bool = True) -> list[Pa
 
 def _bool_to_ini(value: object) -> str:
     return "true" if bool(value) else "false"
+
+
+def _merge_blank_values(section: dict, defaults: dict | None = None) -> dict:
+    merged = deepcopy(section)
+    defaults = defaults or {}
+
+    for key, value in defaults.items():
+        if merged.get(key) in ("", None, []):
+            merged[key] = deepcopy(value)
+    return merged
 
 
 def _serialize_profile_section(profile_section: dict, defaults_section: dict | None = None) -> dict[str, str]:
@@ -250,19 +250,34 @@ def _serialize_profile_section(profile_section: dict, defaults_section: dict | N
     return result
 
 
-def build_runtime_sections(profile: dict, global_settings: dict | None = None) -> dict[str, dict[str, str]]:
+def build_effective_profile(profile: dict, global_settings: dict | None = None) -> dict:
+    settings = global_settings or load_global_settings()
+    defaults = settings.get("defaults", {})
+    payload = _deep_merge(DEFAULT_PROFILE, profile)
+    payload["name"] = sanitize_profile_name(payload.get("name") or profile.get("name", ""))
+    payload["common"]["course_list"] = list(payload.get("common", {}).get("course_list", []) or [])
+    payload["tiku"] = _merge_blank_values(payload.get("tiku", {}), defaults.get("tiku", {}))
+    payload["notification"] = _merge_blank_values(
+        payload.get("notification", {}),
+        defaults.get("notification", {}),
+    )
+    return payload
+
+
+def build_config_sections(profile: dict, global_settings: dict | None = None) -> dict[str, dict[str, str]]:
+    effective_profile = build_effective_profile(profile, global_settings)
     settings = global_settings or load_global_settings()
     defaults = settings.get("defaults", {})
 
-    common_section = _serialize_profile_section(profile.get("common", {}))
-    common_section["course_list"] = ",".join(profile.get("common", {}).get("course_list", []))
+    common_section = _serialize_profile_section(effective_profile.get("common", {}))
+    common_section["course_list"] = ",".join(effective_profile.get("common", {}).get("course_list", []))
 
     tiku_section = _serialize_profile_section(
-        profile.get("tiku", {}),
+        effective_profile.get("tiku", {}),
         defaults.get("tiku", {}),
     )
     notification_section = _serialize_profile_section(
-        profile.get("notification", {}),
+        effective_profile.get("notification", {}),
         defaults.get("notification", {}),
     )
     return {
@@ -272,28 +287,14 @@ def build_runtime_sections(profile: dict, global_settings: dict | None = None) -
     }
 
 
-def write_runtime_ini(profile: dict, global_settings: dict | None = None) -> Path:
-    ensure_desktop_state()
-    config = configparser.ConfigParser()
-    runtime_sections = build_runtime_sections(profile, global_settings)
-    for section_name, values in runtime_sections.items():
-        config[section_name] = values
-
-    runtime_path = RUNTIME_CONFIG_DIR / f"{sanitize_profile_name(profile['name'])}.ini"
-    with runtime_path.open("w", encoding="utf8") as fp:
-        config.write(fp)
-    return runtime_path
-
-
 def profile_summary(profile: dict, global_settings: dict | None = None) -> dict:
-    runtime_sections = build_runtime_sections(profile, global_settings)
+    effective_profile = build_effective_profile(profile, global_settings)
     return {
-        "name": profile["name"],
-        "provider": profile["tiku"].get("provider", ""),
-        "providers": profile["tiku"].get("providers", []),
-        "decision_provider": profile["tiku"].get("decision_provider", ""),
-        "username": profile["common"].get("username", ""),
-        "use_cookies": profile["common"].get("use_cookies", False),
-        "course_count": len(profile["common"].get("course_list", [])),
-        "runtime_common": runtime_sections["common"],
+        "name": effective_profile["name"],
+        "provider": effective_profile["tiku"].get("provider", ""),
+        "providers": effective_profile["tiku"].get("providers", []),
+        "decision_provider": effective_profile["tiku"].get("decision_provider", ""),
+        "username": effective_profile["common"].get("username", ""),
+        "use_cookies": effective_profile["common"].get("use_cookies", False),
+        "course_count": len(effective_profile["common"].get("course_list", [])),
     }

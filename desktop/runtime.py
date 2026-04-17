@@ -12,7 +12,7 @@ from pathlib import Path
 from PyQt5.QtCore import QObject, pyqtSignal
 
 from api.base import Account, Chaoxing
-from api.json_store import build_runtime_sections, load_global_settings, load_json_profile, write_runtime_ini
+from api.json_store import build_effective_profile, load_global_settings, load_json_profile, profile_json_path
 from api.runtime import configure_runtime
 
 
@@ -33,7 +33,7 @@ def _runtime_bool(value: object) -> bool:
 class DesktopRunState:
     id: str
     profile_name: str
-    runtime_config_path: Path
+    profile_path: Path
     command: list[str]
     started_at: float
     status: str = "running"
@@ -51,8 +51,8 @@ class RunManager(QObject):
         self._runs: dict[str, DesktopRunState] = {}
         self._lock = threading.RLock()
 
-    def _build_command(self, runtime_config_path: Path) -> list[str]:
-        return [sys.executable, str(PROJECT_ROOT / "main.py"), "-c", str(runtime_config_path)]
+    def _build_command(self, profile_name: str) -> list[str]:
+        return [sys.executable, "-m", "desktop.worker", profile_name]
 
     def list_runs(self) -> list[DesktopRunState]:
         with self._lock:
@@ -69,9 +69,10 @@ class RunManager(QObject):
                 raise ValueError(f"{profile_name} 已在运行中")
 
             profile = load_json_profile(profile_name)
-            global_settings = load_global_settings()
-            runtime_config_path = write_runtime_ini(profile, global_settings)
-            command = self._build_command(runtime_config_path)
+            profile_path = profile_json_path(profile["name"])
+            if not profile_path.exists():
+                raise FileNotFoundError(f"{profile_name} 的配置文件不存在")
+            command = self._build_command(profile["name"])
 
             process = subprocess.Popen(
                 command,
@@ -85,19 +86,19 @@ class RunManager(QObject):
             )
             run_state = DesktopRunState(
                 id=uuid.uuid4().hex[:8],
-                profile_name=profile_name,
-                runtime_config_path=runtime_config_path,
+                profile_name=profile["name"],
+                profile_path=profile_path,
                 command=command,
                 started_at=time.time(),
                 process=process,
             )
-            self._runs[profile_name] = run_state
+            self._runs[profile["name"]] = run_state
 
         reader = threading.Thread(
             target=self._pump_output,
-            args=(profile_name,),
+            args=(profile["name"],),
             daemon=True,
-            name=f"DesktopRun-{profile_name}",
+            name=f"DesktopRun-{profile['name']}",
         )
         reader.start()
         self.runs_changed.emit()
@@ -177,23 +178,22 @@ def fetch_courses_for_profile(profile_name: str) -> list[dict]:
     with PROFILE_IO_LOCK:
         profile = load_json_profile(profile_name)
         global_settings = load_global_settings()
-        runtime_sections = build_runtime_sections(profile, global_settings)
-        runtime_config_path = write_runtime_ini(profile, global_settings)
-        common = runtime_sections["common"]
+        effective_profile = build_effective_profile(profile, global_settings)
+        common = effective_profile.get("common", {})
 
         configure_runtime(
-            config_path=runtime_config_path,
-            cookies_path=common.get("cookies_path"),
-            cache_path=common.get("cache_path"),
+            config_path=profile_json_path(effective_profile["name"]),
+            cookies_path=common.get("cookies_path") or None,
+            cache_path=common.get("cache_path") or None,
         )
 
-        account = Account(common.get("username", ""), common.get("password", ""))
+        account = Account(str(common.get("username", "") or ""), str(common.get("password", "") or ""))
         chaoxing = Chaoxing(account=account, tiku=None, query_delay=0)
-        login_state = chaoxing.login(login_with_cookies=_runtime_bool(common.get("use_cookies", "false")))
+        login_state = chaoxing.login(login_with_cookies=_runtime_bool(common.get("use_cookies", False)))
         if not login_state["status"]:
             raise ValueError(login_state["msg"])
 
-        selected_course_ids = set(profile.get("common", {}).get("course_list", []))
+        selected_course_ids = set(effective_profile.get("common", {}).get("course_list", []))
         courses = []
         for course in chaoxing.get_course_list():
             courses.append(

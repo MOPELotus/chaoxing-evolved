@@ -16,9 +16,9 @@ class RuntimeContext:
 _runtime_lock = RLock()
 _default_workspace = Path.cwd().resolve()
 _runtime_context = RuntimeContext(
-    config_path=_default_workspace / "config.ini",
-    cookies_path=_default_workspace / "cookies.txt",
-    cache_path=_default_workspace / "cache.json",
+    config_path=_default_workspace / "profile.json",
+    cookies_path=_default_workspace / "profile.cookies.txt",
+    cache_path=_default_workspace / "profile.cache.json",
     workspace_dir=_default_workspace,
 )
 
@@ -35,9 +35,7 @@ def _resolve_path(path: str | Path | None, base_dir: Path) -> Path | None:
     return candidate
 
 
-def _get_default_sidecar_path(config_path: Path, legacy_name: str, suffix: str) -> Path:
-    if config_path.name.lower() == "config.ini":
-        return config_path.with_name(legacy_name)
+def _get_default_sidecar_path(config_path: Path, suffix: str) -> Path:
     return config_path.with_suffix(suffix)
 
 
@@ -57,19 +55,19 @@ def build_runtime_context(
     else:
         workspace = cwd
 
-    runtime_config_path = resolved_config_path or workspace / "config.ini"
-    runtime_cookies_path = _resolve_path(cookies_path, workspace)
-    runtime_cache_path = _resolve_path(cache_path, workspace)
+    resolved_profile_path = resolved_config_path or workspace / "profile.json"
+    resolved_cookies_path = _resolve_path(cookies_path, workspace)
+    resolved_cache_path = _resolve_path(cache_path, workspace)
 
-    if runtime_cookies_path is None:
-        runtime_cookies_path = _get_default_sidecar_path(runtime_config_path, "cookies.txt", ".cookies.txt")
-    if runtime_cache_path is None:
-        runtime_cache_path = _get_default_sidecar_path(runtime_config_path, "cache.json", ".cache.json")
+    if resolved_cookies_path is None:
+        resolved_cookies_path = _get_default_sidecar_path(resolved_profile_path, ".cookies.txt")
+    if resolved_cache_path is None:
+        resolved_cache_path = _get_default_sidecar_path(resolved_profile_path, ".cache.json")
 
     return RuntimeContext(
-        config_path=runtime_config_path,
-        cookies_path=runtime_cookies_path,
-        cache_path=runtime_cache_path,
+        config_path=resolved_profile_path,
+        cookies_path=resolved_cookies_path,
+        cache_path=resolved_cache_path,
         workspace_dir=workspace,
     )
 
