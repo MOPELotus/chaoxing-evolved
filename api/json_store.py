@@ -12,6 +12,44 @@ GLOBAL_SETTINGS_PATH = DESKTOP_STATE_DIR / "global_settings.json"
 
 CURRENT_SCHEMA_VERSION = 1
 
+OVERRIDABLE_PROFILE_FIELDS = {
+    "tiku": [
+        "tokens",
+        "endpoint",
+        "key",
+        "model",
+        "http_proxy",
+        "min_interval_seconds",
+        "siliconflow_key",
+        "siliconflow_model",
+        "siliconflow_endpoint",
+        "url",
+        "likeapi_search",
+        "likeapi_vision",
+        "likeapi_model",
+        "likeapi_retry",
+        "likeapi_retry_times",
+    ],
+    "notification": [
+        "provider",
+        "url",
+        "tg_chat_id",
+        "onebot_host",
+        "onebot_port",
+        "onebot_path",
+        "onebot_access_token",
+        "onebot_target_type",
+        "onebot_user_id",
+        "onebot_group_id",
+        "notify_on_start",
+        "notify_on_success",
+        "notify_on_failure",
+        "notify_on_stop",
+        "attach_log_file",
+        "include_log_excerpt",
+    ],
+}
+
 DEFAULT_GLOBAL_SETTINGS = {
     "schema_version": CURRENT_SCHEMA_VERSION,
     "theme": {
@@ -66,6 +104,10 @@ DEFAULT_GLOBAL_SETTINGS = {
 DEFAULT_PROFILE = {
     "schema_version": CURRENT_SCHEMA_VERSION,
     "name": "",
+    "overrides": {
+        "tiku": {},
+        "notification": {},
+    },
     "common": {
         "use_cookies": False,
         "cookies_path": "",
@@ -85,41 +127,41 @@ DEFAULT_PROFILE = {
         "submit": False,
         "cover_rate": 0.9,
         "delay": 1.0,
-        "tokens": "",
-        "likeapi_search": False,
-        "likeapi_vision": True,
-        "likeapi_model": "glm-4.5-air",
-        "likeapi_retry": True,
-        "likeapi_retry_times": 3,
-        "url": "",
-        "endpoint": "",
-        "key": "",
-        "model": "",
-        "min_interval_seconds": 3,
-        "http_proxy": "",
-        "siliconflow_key": "",
-        "siliconflow_model": "deepseek-ai/DeepSeek-R1",
-        "siliconflow_endpoint": "https://api.siliconflow.cn/v1/chat/completions",
+        "tokens": None,
+        "likeapi_search": None,
+        "likeapi_vision": None,
+        "likeapi_model": None,
+        "likeapi_retry": None,
+        "likeapi_retry_times": None,
+        "url": None,
+        "endpoint": None,
+        "key": None,
+        "model": None,
+        "min_interval_seconds": None,
+        "http_proxy": None,
+        "siliconflow_key": None,
+        "siliconflow_model": None,
+        "siliconflow_endpoint": None,
         "true_list": ["正确", "对", "√", "是"],
         "false_list": ["错误", "错", "×", "否", "不对", "不正确"],
     },
     "notification": {
-        "provider": "",
-        "url": "",
-        "tg_chat_id": "",
-        "onebot_host": "127.0.0.1",
-        "onebot_port": 3001,
-        "onebot_path": "/",
-        "onebot_access_token": "",
-        "onebot_target_type": "private",
-        "onebot_user_id": "",
-        "onebot_group_id": "",
-        "notify_on_start": False,
-        "notify_on_success": True,
-        "notify_on_failure": True,
-        "notify_on_stop": True,
-        "attach_log_file": True,
-        "include_log_excerpt": True,
+        "provider": None,
+        "url": None,
+        "tg_chat_id": None,
+        "onebot_host": None,
+        "onebot_port": None,
+        "onebot_path": None,
+        "onebot_access_token": None,
+        "onebot_target_type": None,
+        "onebot_user_id": None,
+        "onebot_group_id": None,
+        "notify_on_start": None,
+        "notify_on_success": None,
+        "notify_on_failure": None,
+        "notify_on_stop": None,
+        "attach_log_file": None,
+        "include_log_excerpt": None,
     },
 }
 
@@ -184,6 +226,41 @@ def save_json_file(path: Path, data: dict) -> Path:
     return path
 
 
+def _is_blank_override_value(value: object) -> bool:
+    return value in ("", None, [])
+
+
+def profile_override_enabled(profile: dict, section: str, key: str) -> bool:
+    overrides = profile.get("overrides", {}).get(section, {})
+    if key in overrides:
+        return bool(overrides.get(key))
+    return not _is_blank_override_value(profile.get(section, {}).get(key))
+
+
+def _prune_profile_payload(profile: dict) -> dict:
+    payload = deepcopy(profile)
+    overrides = payload.setdefault("overrides", {})
+
+    for section, keys in OVERRIDABLE_PROFILE_FIELDS.items():
+        section_payload = payload.setdefault(section, {})
+        section_overrides = overrides.setdefault(section, {})
+        cleaned_overrides = {key: True for key, enabled in section_overrides.items() if key in keys and bool(enabled)}
+
+        for key in keys:
+            if key not in cleaned_overrides:
+                section_payload.pop(key, None)
+
+        if cleaned_overrides:
+            overrides[section] = cleaned_overrides
+        else:
+            overrides.pop(section, None)
+
+    if not overrides:
+        payload.pop("overrides", None)
+
+    return payload
+
+
 def load_global_settings() -> dict:
     ensure_desktop_state()
     return load_json_file(GLOBAL_SETTINGS_PATH, DEFAULT_GLOBAL_SETTINGS)
@@ -221,7 +298,7 @@ def save_json_profile(profile: dict) -> Path:
     profile_name = sanitize_profile_name(profile.get("name", ""))
     payload = _deep_merge(DEFAULT_PROFILE, profile)
     payload["name"] = profile_name
-    return save_json_file(profile_json_path(profile_name), payload)
+    return save_json_file(profile_json_path(profile_name), _prune_profile_payload(payload))
 
 
 def delete_json_profile(name: str, remove_runtime_state: bool = True) -> list[Path]:
@@ -289,11 +366,14 @@ def build_effective_profile(profile: dict, global_settings: dict | None = None) 
     payload = _deep_merge(DEFAULT_PROFILE, profile)
     payload["name"] = sanitize_profile_name(payload.get("name") or profile.get("name", ""))
     payload["common"]["course_list"] = list(payload.get("common", {}).get("course_list", []) or [])
-    payload["tiku"] = _merge_blank_values(payload.get("tiku", {}), defaults.get("tiku", {}))
-    payload["notification"] = _merge_blank_values(
-        payload.get("notification", {}),
-        defaults.get("notification", {}),
-    )
+
+    for section, keys in OVERRIDABLE_PROFILE_FIELDS.items():
+        section_payload = payload.setdefault(section, {})
+        section_defaults = defaults.get(section, {})
+        for key in keys:
+            if not profile_override_enabled(payload, section, key):
+                section_payload[key] = deepcopy(section_defaults.get(key))
+
     return payload
 
 

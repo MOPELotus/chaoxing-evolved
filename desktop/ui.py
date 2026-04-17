@@ -58,12 +58,14 @@ with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.St
 from api.json_store import (
     DEFAULT_GLOBAL_SETTINGS,
     DEFAULT_PROFILE,
+    build_effective_profile,
     create_json_profile,
     delete_json_profile,
     ensure_desktop_state,
     list_json_profiles,
     load_global_settings,
     load_json_profile,
+    profile_override_enabled,
     profile_summary,
     save_global_settings,
     save_json_profile,
@@ -212,6 +214,29 @@ def make_field(label: str, widget: QWidget, hint: str = "") -> QWidget:
         hint_label = CaptionLabel(hint, container)
         hint_label.setWordWrap(True)
         layout.addWidget(hint_label)
+    layout.addWidget(widget)
+    return container
+
+
+def make_override_field(label: str, widget: QWidget, toggle: CheckBox, hint: str = "") -> QWidget:
+    container = QWidget()
+    layout = QVBoxLayout(container)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(6)
+
+    header = QHBoxLayout()
+    header.setContentsMargins(0, 0, 0, 0)
+    header.setSpacing(8)
+    header.addWidget(BodyLabel(label, container))
+    header.addStretch(1)
+    header.addWidget(toggle)
+    layout.addLayout(header)
+
+    if hint:
+        hint_label = CaptionLabel(hint, container)
+        hint_label.setWordWrap(True)
+        layout.addWidget(hint_label)
+
     layout.addWidget(widget)
     return container
 
@@ -833,10 +858,12 @@ class ProfileEditorPanel(QWidget):
     def __init__(self, run_manager: RunManager, parent=None) -> None:
         super().__init__(parent)
         self.run_manager = run_manager
+        self._editor_enabled = False
         self._loading = False
         self._dirty = False
         self._current_profile_name: str | None = None
         self._profile_source = deepcopy(DEFAULT_PROFILE)
+        self._override_controls: dict[tuple[str, str], tuple[CheckBox, QWidget]] = {}
         self._course_cache: dict[str, list[dict]] = {}
         self._courses: list[dict] = []
         self._selected_course_ids: list[str] = []
@@ -955,6 +982,35 @@ class ProfileEditorPanel(QWidget):
             self.cache_path_edit,
         )
 
+    def _create_override_check(self, section: str, key: str, widget: QWidget, parent: QWidget) -> CheckBox:
+        check = CheckBox("启用单独设置", parent)
+        self._override_controls[(section, key)] = (check, widget)
+        check.stateChanged.connect(self._mark_dirty)
+        check.stateChanged.connect(lambda _state, section_name=section, key_name=key: self._update_override_widget_state(section_name, key_name))
+        return check
+
+    def _override_enabled(self, section: str, key: str) -> bool:
+        control = self._override_controls.get((section, key))
+        return bool(control and control[0].isChecked())
+
+    def _set_override_enabled(self, section: str, key: str, enabled: bool) -> None:
+        control = self._override_controls.get((section, key))
+        if not control:
+            return
+        control[0].setChecked(bool(enabled))
+        self._update_override_widget_state(section, key)
+
+    def _update_override_widget_state(self, section: str, key: str) -> None:
+        control = self._override_controls.get((section, key))
+        if not control:
+            return
+        toggle, widget = control
+        widget.setEnabled(self._editor_enabled and toggle.isChecked())
+
+    def _apply_override_widget_states(self) -> None:
+        for section, key in self._override_controls:
+            self._update_override_widget_state(section, key)
+
     def _build_tiku_card(self) -> None:
         self.tiku_card = SectionCard(
             "题库与 AI",
@@ -1007,54 +1063,69 @@ class ProfileEditorPanel(QWidget):
 
         self.tokens_edit = LineEdit(self.tiku_card)
         self.tokens_edit.setPlaceholderText("Enncy / LIKE 的令牌，多个用英文逗号分隔")
+        self.tokens_override_check = self._create_override_check("tiku", "tokens", self.tokens_edit, self.tiku_card)
         self.ai_endpoint_edit = LineEdit(self.tiku_card)
         self.ai_endpoint_edit.setPlaceholderText("兼容 OpenAI 格式的接口地址")
+        self.ai_endpoint_override_check = self._create_override_check("tiku", "endpoint", self.ai_endpoint_edit, self.tiku_card)
         self.ai_key_edit = LineEdit(self.tiku_card)
         self.ai_key_edit.setPlaceholderText("接口密钥")
+        self.ai_key_override_check = self._create_override_check("tiku", "key", self.ai_key_edit, self.tiku_card)
         self.ai_model_edit = LineEdit(self.tiku_card)
         self.ai_model_edit.setPlaceholderText("模型名称")
+        self.ai_model_override_check = self._create_override_check("tiku", "model", self.ai_model_edit, self.tiku_card)
         self.http_proxy_edit = LineEdit(self.tiku_card)
         self.http_proxy_edit.setPlaceholderText("可选代理，例如 http://127.0.0.1:7890")
+        self.http_proxy_override_check = self._create_override_check("tiku", "http_proxy", self.http_proxy_edit, self.tiku_card)
         self.min_interval_spin = SpinBox(self.tiku_card)
         self.min_interval_spin.setRange(0, 120)
+        self.min_interval_override_check = self._create_override_check("tiku", "min_interval_seconds", self.min_interval_spin, self.tiku_card)
 
         self.silicon_key_edit = LineEdit(self.tiku_card)
         self.silicon_key_edit.setPlaceholderText("SiliconFlow 密钥")
+        self.silicon_key_override_check = self._create_override_check("tiku", "siliconflow_key", self.silicon_key_edit, self.tiku_card)
         self.silicon_model_edit = LineEdit(self.tiku_card)
         self.silicon_model_edit.setPlaceholderText("SiliconFlow 模型")
+        self.silicon_model_override_check = self._create_override_check("tiku", "siliconflow_model", self.silicon_model_edit, self.tiku_card)
         self.silicon_endpoint_edit = LineEdit(self.tiku_card)
         self.silicon_endpoint_edit.setPlaceholderText("SiliconFlow 接口地址")
+        self.silicon_endpoint_override_check = self._create_override_check("tiku", "siliconflow_endpoint", self.silicon_endpoint_edit, self.tiku_card)
 
         self.like_model_edit = LineEdit(self.tiku_card)
         self.like_model_edit.setPlaceholderText("LIKE 模型")
+        self.like_model_override_check = self._create_override_check("tiku", "likeapi_model", self.like_model_edit, self.tiku_card)
         self.like_retry_times_spin = SpinBox(self.tiku_card)
         self.like_retry_times_spin.setRange(0, 10)
+        self.like_retry_times_override_check = self._create_override_check("tiku", "likeapi_retry_times", self.like_retry_times_spin, self.tiku_card)
         self.like_search_check = CheckBox("LIKE 启用联网搜索", self.tiku_card)
+        self.like_search_override_check = self._create_override_check("tiku", "likeapi_search", self.like_search_check, self.tiku_card)
         self.like_vision_check = CheckBox("LIKE 启用视觉识图", self.tiku_card)
+        self.like_vision_override_check = self._create_override_check("tiku", "likeapi_vision", self.like_vision_check, self.tiku_card)
         self.like_retry_check = CheckBox("LIKE 失败自动重试", self.tiku_card)
+        self.like_retry_override_check = self._create_override_check("tiku", "likeapi_retry", self.like_retry_check, self.tiku_card)
 
         self.adapter_url_edit = LineEdit(self.tiku_card)
         self.adapter_url_edit.setPlaceholderText("TikuAdapter 地址")
+        self.adapter_url_override_check = self._create_override_check("tiku", "url", self.adapter_url_edit, self.tiku_card)
         self.true_list_edit = LineEdit(self.tiku_card)
         self.true_list_edit.setPlaceholderText("正确,对,√,是")
         self.false_list_edit = LineEdit(self.tiku_card)
         self.false_list_edit.setPlaceholderText("错误,错,×,否")
 
-        detail_grid.addWidget(make_field("令牌列表", self.tokens_edit, "留空则继承全局令牌"), 0, 0, 1, 2)
-        detail_grid.addWidget(make_field("AI 接口地址", self.ai_endpoint_edit), 1, 0)
-        detail_grid.addWidget(make_field("AI 密钥", self.ai_key_edit), 1, 1)
-        detail_grid.addWidget(make_field("AI 模型", self.ai_model_edit), 2, 0)
-        detail_grid.addWidget(make_field("HTTP 代理", self.http_proxy_edit), 2, 1)
-        detail_grid.addWidget(make_field("最小请求间隔", self.min_interval_spin), 3, 0)
-        detail_grid.addWidget(make_field("硅基密钥", self.silicon_key_edit), 4, 0)
-        detail_grid.addWidget(make_field("硅基模型", self.silicon_model_edit), 4, 1)
-        detail_grid.addWidget(make_field("硅基接口地址", self.silicon_endpoint_edit), 5, 0, 1, 2)
-        detail_grid.addWidget(make_field("LIKE 模型", self.like_model_edit), 6, 0)
-        detail_grid.addWidget(make_field("LIKE 重试次数", self.like_retry_times_spin), 6, 1)
-        detail_grid.addWidget(self.like_search_check, 7, 0)
-        detail_grid.addWidget(self.like_vision_check, 7, 1)
-        detail_grid.addWidget(self.like_retry_check, 8, 0)
-        detail_grid.addWidget(make_field("TikuAdapter 地址", self.adapter_url_edit), 9, 0, 1, 2)
+        detail_grid.addWidget(make_override_field("令牌列表", self.tokens_edit, self.tokens_override_check, "关闭时继承全局令牌。"), 0, 0, 1, 2)
+        detail_grid.addWidget(make_override_field("AI 接口地址", self.ai_endpoint_edit, self.ai_endpoint_override_check), 1, 0)
+        detail_grid.addWidget(make_override_field("AI 密钥", self.ai_key_edit, self.ai_key_override_check), 1, 1)
+        detail_grid.addWidget(make_override_field("AI 模型", self.ai_model_edit, self.ai_model_override_check), 2, 0)
+        detail_grid.addWidget(make_override_field("HTTP 代理", self.http_proxy_edit, self.http_proxy_override_check), 2, 1)
+        detail_grid.addWidget(make_override_field("最小请求间隔", self.min_interval_spin, self.min_interval_override_check), 3, 0)
+        detail_grid.addWidget(make_override_field("硅基密钥", self.silicon_key_edit, self.silicon_key_override_check), 4, 0)
+        detail_grid.addWidget(make_override_field("硅基模型", self.silicon_model_edit, self.silicon_model_override_check), 4, 1)
+        detail_grid.addWidget(make_override_field("硅基接口地址", self.silicon_endpoint_edit, self.silicon_endpoint_override_check), 5, 0, 1, 2)
+        detail_grid.addWidget(make_override_field("LIKE 模型", self.like_model_edit, self.like_model_override_check), 6, 0)
+        detail_grid.addWidget(make_override_field("LIKE 重试次数", self.like_retry_times_spin, self.like_retry_times_override_check), 6, 1)
+        detail_grid.addWidget(make_override_field("LIKE 联网搜索", self.like_search_check, self.like_search_override_check), 7, 0)
+        detail_grid.addWidget(make_override_field("LIKE 视觉识图", self.like_vision_check, self.like_vision_override_check), 7, 1)
+        detail_grid.addWidget(make_override_field("LIKE 自动重试", self.like_retry_check, self.like_retry_override_check), 8, 0)
+        detail_grid.addWidget(make_override_field("TikuAdapter 地址", self.adapter_url_edit, self.adapter_url_override_check), 9, 0, 1, 2)
         detail_grid.addWidget(make_field("判断题真值列表", self.true_list_edit), 10, 0)
         detail_grid.addWidget(make_field("判断题假值列表", self.false_list_edit), 10, 1)
         self.tiku_card.body_layout.addLayout(detail_grid)
@@ -1122,47 +1193,63 @@ class ProfileEditorPanel(QWidget):
         grid.setVerticalSpacing(12)
         self.notification_provider_combo = ComboBox(self.notification_card)
         self.notification_provider_combo.addItems(NOTIFICATION_PROVIDER_OPTIONS)
+        self.notification_provider_override_check = self._create_override_check("notification", "provider", self.notification_provider_combo, self.notification_card)
         self.notification_url_edit = LineEdit(self.notification_card)
         self.notification_url_edit.setPlaceholderText("HTTP 推送地址或 Telegram Bot API 地址")
+        self.notification_url_override_check = self._create_override_check("notification", "url", self.notification_url_edit, self.notification_card)
         self.notification_chat_id_edit = LineEdit(self.notification_card)
         self.notification_chat_id_edit.setPlaceholderText("Telegram 会话 ID")
+        self.notification_chat_id_override_check = self._create_override_check("notification", "tg_chat_id", self.notification_chat_id_edit, self.notification_card)
         self.notification_target_combo = ComboBox(self.notification_card)
         self.notification_target_combo.addItems(list(NOTIFICATION_TARGET_LABELS.values()))
+        self.notification_target_override_check = self._create_override_check("notification", "onebot_target_type", self.notification_target_combo, self.notification_card)
         self.onebot_host_edit = LineEdit(self.notification_card)
         self.onebot_host_edit.setPlaceholderText("OneBot 反向 WS 监听地址")
+        self.onebot_host_override_check = self._create_override_check("notification", "onebot_host", self.onebot_host_edit, self.notification_card)
         self.onebot_port_spin = SpinBox(self.notification_card)
         self.onebot_port_spin.setRange(1, 65535)
+        self.onebot_port_override_check = self._create_override_check("notification", "onebot_port", self.onebot_port_spin, self.notification_card)
         self.onebot_path_edit = LineEdit(self.notification_card)
         self.onebot_path_edit.setPlaceholderText("OneBot 反向 WS 路径")
+        self.onebot_path_override_check = self._create_override_check("notification", "onebot_path", self.onebot_path_edit, self.notification_card)
         self.onebot_access_token_edit = LineEdit(self.notification_card)
         self.onebot_access_token_edit.setPlaceholderText("OneBot Access Token")
+        self.onebot_access_token_override_check = self._create_override_check("notification", "onebot_access_token", self.onebot_access_token_edit, self.notification_card)
         self.onebot_user_id_edit = LineEdit(self.notification_card)
         self.onebot_user_id_edit.setPlaceholderText("接收通知的 QQ 号")
+        self.onebot_user_id_override_check = self._create_override_check("notification", "onebot_user_id", self.onebot_user_id_edit, self.notification_card)
         self.onebot_group_id_edit = LineEdit(self.notification_card)
         self.onebot_group_id_edit.setPlaceholderText("接收通知的群号")
+        self.onebot_group_id_override_check = self._create_override_check("notification", "onebot_group_id", self.onebot_group_id_edit, self.notification_card)
         self.notify_on_start_check = CheckBox("任务启动时推送通知", self.notification_card)
+        self.notify_on_start_override_check = self._create_override_check("notification", "notify_on_start", self.notify_on_start_check, self.notification_card)
         self.notify_on_success_check = CheckBox("任务成功时推送通知", self.notification_card)
+        self.notify_on_success_override_check = self._create_override_check("notification", "notify_on_success", self.notify_on_success_check, self.notification_card)
         self.notify_on_failure_check = CheckBox("任务异常时推送通知", self.notification_card)
+        self.notify_on_failure_override_check = self._create_override_check("notification", "notify_on_failure", self.notify_on_failure_check, self.notification_card)
         self.notify_on_stop_check = CheckBox("任务停止时推送通知", self.notification_card)
+        self.notify_on_stop_override_check = self._create_override_check("notification", "notify_on_stop", self.notify_on_stop_check, self.notification_card)
         self.attach_log_file_check = CheckBox("推送日志文件", self.notification_card)
+        self.attach_log_file_override_check = self._create_override_check("notification", "attach_log_file", self.attach_log_file_check, self.notification_card)
         self.include_log_excerpt_check = CheckBox("附带日志摘要", self.notification_card)
+        self.include_log_excerpt_override_check = self._create_override_check("notification", "include_log_excerpt", self.include_log_excerpt_check, self.notification_card)
 
-        grid.addWidget(make_field("通知提供方", self.notification_provider_combo), 0, 0)
-        grid.addWidget(make_field("通知地址", self.notification_url_edit), 1, 0, 1, 2)
-        grid.addWidget(make_field("Telegram 会话 ID", self.notification_chat_id_edit), 2, 0)
-        grid.addWidget(make_field("OneBot 目标类型", self.notification_target_combo), 2, 1)
-        grid.addWidget(make_field("OneBot 监听地址", self.onebot_host_edit), 3, 0)
-        grid.addWidget(make_field("OneBot 监听端口", self.onebot_port_spin), 3, 1)
-        grid.addWidget(make_field("OneBot 路径", self.onebot_path_edit), 4, 0)
-        grid.addWidget(make_field("OneBot Access Token", self.onebot_access_token_edit), 4, 1)
-        grid.addWidget(make_field("QQ 号", self.onebot_user_id_edit), 5, 0)
-        grid.addWidget(make_field("群号", self.onebot_group_id_edit), 5, 1)
-        grid.addWidget(self.notify_on_start_check, 6, 0)
-        grid.addWidget(self.notify_on_success_check, 6, 1)
-        grid.addWidget(self.notify_on_failure_check, 7, 0)
-        grid.addWidget(self.notify_on_stop_check, 7, 1)
-        grid.addWidget(self.attach_log_file_check, 8, 0)
-        grid.addWidget(self.include_log_excerpt_check, 8, 1)
+        grid.addWidget(make_override_field("通知提供方", self.notification_provider_combo, self.notification_provider_override_check), 0, 0)
+        grid.addWidget(make_override_field("通知地址", self.notification_url_edit, self.notification_url_override_check), 1, 0, 1, 2)
+        grid.addWidget(make_override_field("Telegram 会话 ID", self.notification_chat_id_edit, self.notification_chat_id_override_check), 2, 0)
+        grid.addWidget(make_override_field("OneBot 目标类型", self.notification_target_combo, self.notification_target_override_check), 2, 1)
+        grid.addWidget(make_override_field("OneBot 监听地址", self.onebot_host_edit, self.onebot_host_override_check), 3, 0)
+        grid.addWidget(make_override_field("OneBot 监听端口", self.onebot_port_spin, self.onebot_port_override_check), 3, 1)
+        grid.addWidget(make_override_field("OneBot 路径", self.onebot_path_edit, self.onebot_path_override_check), 4, 0)
+        grid.addWidget(make_override_field("OneBot Access Token", self.onebot_access_token_edit, self.onebot_access_token_override_check), 4, 1)
+        grid.addWidget(make_override_field("QQ 号", self.onebot_user_id_edit, self.onebot_user_id_override_check), 5, 0)
+        grid.addWidget(make_override_field("群号", self.onebot_group_id_edit, self.onebot_group_id_override_check), 5, 1)
+        grid.addWidget(make_override_field("启动通知", self.notify_on_start_check, self.notify_on_start_override_check), 6, 0)
+        grid.addWidget(make_override_field("成功通知", self.notify_on_success_check, self.notify_on_success_override_check), 6, 1)
+        grid.addWidget(make_override_field("异常通知", self.notify_on_failure_check, self.notify_on_failure_override_check), 7, 0)
+        grid.addWidget(make_override_field("停止通知", self.notify_on_stop_check, self.notify_on_stop_override_check), 7, 1)
+        grid.addWidget(make_override_field("推送日志文件", self.attach_log_file_check, self.attach_log_file_override_check), 8, 0)
+        grid.addWidget(make_override_field("附带日志摘要", self.include_log_excerpt_check, self.include_log_excerpt_override_check), 8, 1)
         self.notification_card.body_layout.addLayout(grid)
         self.scroll_layout.addWidget(self.notification_card)
 
@@ -1234,6 +1321,7 @@ class ProfileEditorPanel(QWidget):
                 widget.stateChanged.connect(self._mark_dirty)
 
     def _set_editor_enabled(self, enabled: bool) -> None:
+        self._editor_enabled = enabled
         for widget in [
             self.reload_button,
             self.save_button,
@@ -1292,8 +1380,11 @@ class ProfileEditorPanel(QWidget):
             self.toggle_json_button,
         ]:
             widget.setEnabled(enabled)
+        for toggle, _widget in self._override_controls.values():
+            toggle.setEnabled(enabled)
         self.provider_chip_panel.setEnabled(enabled)
         self.course_chip_panel.setEnabled(enabled)
+        self._apply_override_widget_states()
 
     def clear_profile(self) -> None:
         self._current_profile_name = None
@@ -1302,6 +1393,9 @@ class ProfileEditorPanel(QWidget):
         self._courses = []
         self._selected_course_ids = []
         self._loading = True
+        global_settings = load_global_settings()
+        tiku_defaults = global_settings.get("defaults", {}).get("tiku", {})
+        notification_defaults = global_settings.get("defaults", {}).get("notification", {})
 
         self.profile_title.setText("未选择配置")
         self.profile_state.setText("请选择左侧配置后再进行编辑。")
@@ -1320,41 +1414,43 @@ class ProfileEditorPanel(QWidget):
         self.submit_check.setChecked(False)
         self.cover_rate_spin.setValue(0.9)
         self.delay_spin.setValue(1.0)
-        self.tokens_edit.clear()
-        self.ai_endpoint_edit.clear()
-        self.ai_key_edit.clear()
-        self.ai_model_edit.clear()
-        self.http_proxy_edit.clear()
-        self.min_interval_spin.setValue(3)
-        self.silicon_key_edit.clear()
-        self.silicon_model_edit.clear()
-        self.silicon_endpoint_edit.clear()
-        self.like_model_edit.clear()
-        self.like_retry_times_spin.setValue(3)
-        self.like_search_check.setChecked(False)
-        self.like_vision_check.setChecked(True)
-        self.like_retry_check.setChecked(True)
-        self.adapter_url_edit.clear()
+        self.tokens_edit.setText(str(tiku_defaults.get("tokens", "") or ""))
+        self.ai_endpoint_edit.setText(str(tiku_defaults.get("endpoint", "") or ""))
+        self.ai_key_edit.setText(str(tiku_defaults.get("key", "") or ""))
+        self.ai_model_edit.setText(str(tiku_defaults.get("model", "") or ""))
+        self.http_proxy_edit.setText(str(tiku_defaults.get("http_proxy", "") or ""))
+        self.min_interval_spin.setValue(int(tiku_defaults.get("min_interval_seconds", 3) or 3))
+        self.silicon_key_edit.setText(str(tiku_defaults.get("siliconflow_key", "") or ""))
+        self.silicon_model_edit.setText(str(tiku_defaults.get("siliconflow_model", "") or ""))
+        self.silicon_endpoint_edit.setText(str(tiku_defaults.get("siliconflow_endpoint", "") or ""))
+        self.like_model_edit.setText(str(tiku_defaults.get("likeapi_model", "") or ""))
+        self.like_retry_times_spin.setValue(int(tiku_defaults.get("likeapi_retry_times", 3) or 3))
+        self.like_search_check.setChecked(parse_bool(tiku_defaults.get("likeapi_search", False), False))
+        self.like_vision_check.setChecked(parse_bool(tiku_defaults.get("likeapi_vision", True), True))
+        self.like_retry_check.setChecked(parse_bool(tiku_defaults.get("likeapi_retry", True), True))
+        self.adapter_url_edit.setText(str(tiku_defaults.get("url", "") or ""))
         self.true_list_edit.setText(join_csv(DEFAULT_PROFILE["tiku"]["true_list"]))
         self.false_list_edit.setText(join_csv(DEFAULT_PROFILE["tiku"]["false_list"]))
         self.provider_chip_panel.set_selected([])
 
-        set_combo_text(self.notification_provider_combo, "不启用")
-        self.notification_url_edit.clear()
-        self.notification_chat_id_edit.clear()
-        set_notification_target(self.notification_target_combo, "private")
-        self.onebot_host_edit.setText(str(DEFAULT_PROFILE["notification"]["onebot_host"]))
-        self.onebot_port_spin.setValue(int(DEFAULT_PROFILE["notification"]["onebot_port"]))
-        self.onebot_path_edit.setText(str(DEFAULT_PROFILE["notification"]["onebot_path"]))
-        self.onebot_access_token_edit.clear()
-        self.onebot_user_id_edit.clear()
-        self.onebot_group_id_edit.clear()
-        self.notify_on_start_check.setChecked(bool(DEFAULT_PROFILE["notification"]["notify_on_start"]))
-        self.notify_on_success_check.setChecked(bool(DEFAULT_PROFILE["notification"]["notify_on_success"]))
-        self.notify_on_failure_check.setChecked(bool(DEFAULT_PROFILE["notification"]["notify_on_failure"]))
-        self.notify_on_stop_check.setChecked(bool(DEFAULT_PROFILE["notification"]["notify_on_stop"]))
-        self.attach_log_file_check.setChecked(bool(DEFAULT_PROFILE["notification"]["attach_log_file"]))
-        self.include_log_excerpt_check.setChecked(bool(DEFAULT_PROFILE["notification"]["include_log_excerpt"]))
+        set_combo_text(self.notification_provider_combo, str(notification_defaults.get("provider", "") or "不启用"))
+        self.notification_url_edit.setText(str(notification_defaults.get("url", "") or ""))
+        self.notification_chat_id_edit.setText(str(notification_defaults.get("tg_chat_id", "") or ""))
+        set_notification_target(self.notification_target_combo, str(notification_defaults.get("onebot_target_type", "private") or "private"))
+        self.onebot_host_edit.setText(str(notification_defaults.get("onebot_host", "127.0.0.1") or "127.0.0.1"))
+        self.onebot_port_spin.setValue(int(notification_defaults.get("onebot_port", 3001) or 3001))
+        self.onebot_path_edit.setText(str(notification_defaults.get("onebot_path", "/") or "/"))
+        self.onebot_access_token_edit.setText(str(notification_defaults.get("onebot_access_token", "") or ""))
+        self.onebot_user_id_edit.setText(str(notification_defaults.get("onebot_user_id", "") or ""))
+        self.onebot_group_id_edit.setText(str(notification_defaults.get("onebot_group_id", "") or ""))
+        self.notify_on_start_check.setChecked(parse_bool(notification_defaults.get("notify_on_start", False), False))
+        self.notify_on_success_check.setChecked(parse_bool(notification_defaults.get("notify_on_success", True), True))
+        self.notify_on_failure_check.setChecked(parse_bool(notification_defaults.get("notify_on_failure", True), True))
+        self.notify_on_stop_check.setChecked(parse_bool(notification_defaults.get("notify_on_stop", True), True))
+        self.attach_log_file_check.setChecked(parse_bool(notification_defaults.get("attach_log_file", True), True))
+        self.include_log_excerpt_check.setChecked(parse_bool(notification_defaults.get("include_log_excerpt", True), True))
+        for section, key in self._override_controls:
+            self._set_override_enabled(section, key, False)
         self.json_editor.clear()
         self.course_chip_panel.set_items([], [])
         self.course_status.setText("尚未获取课程列表。")
@@ -1373,10 +1469,13 @@ class ProfileEditorPanel(QWidget):
         self._courses = self._course_cache.get(profile_name, [])
         self._dirty = False
         self._loading = True
+        effective_profile = build_effective_profile(profile)
 
         common = profile.get("common", {})
         tiku = profile.get("tiku", {})
         notification = profile.get("notification", {})
+        effective_tiku = effective_profile.get("tiku", {})
+        effective_notification = effective_profile.get("notification", {})
 
         self.profile_title.setText(profile_name)
         self.use_cookies_check.setChecked(bool(common.get("use_cookies", False)))
@@ -1398,42 +1497,79 @@ class ProfileEditorPanel(QWidget):
         self.submit_check.setChecked(bool(tiku.get("submit", False)))
         self.cover_rate_spin.setValue(float(tiku.get("cover_rate", 0.9) or 0.9))
         self.delay_spin.setValue(float(tiku.get("delay", 1.0) or 1.0))
-        self.tokens_edit.setText(str(tiku.get("tokens", "")))
-        self.ai_endpoint_edit.setText(str(tiku.get("endpoint", "")))
-        self.ai_key_edit.setText(str(tiku.get("key", "")))
-        self.ai_model_edit.setText(str(tiku.get("model", "")))
-        self.http_proxy_edit.setText(str(tiku.get("http_proxy", "")))
-        self.min_interval_spin.setValue(int(tiku.get("min_interval_seconds", 3) or 3))
-        self.silicon_key_edit.setText(str(tiku.get("siliconflow_key", "")))
-        self.silicon_model_edit.setText(str(tiku.get("siliconflow_model", "")))
-        self.silicon_endpoint_edit.setText(str(tiku.get("siliconflow_endpoint", "")))
-        self.like_model_edit.setText(str(tiku.get("likeapi_model", "")))
-        self.like_retry_times_spin.setValue(int(tiku.get("likeapi_retry_times", 3) or 3))
-        self.like_search_check.setChecked(bool(tiku.get("likeapi_search", False)))
-        self.like_vision_check.setChecked(bool(tiku.get("likeapi_vision", True)))
-        self.like_retry_check.setChecked(bool(tiku.get("likeapi_retry", True)))
-        self.adapter_url_edit.setText(str(tiku.get("url", "")))
+        self.tokens_edit.setText(str(effective_tiku.get("tokens", "") or ""))
+        self.ai_endpoint_edit.setText(str(effective_tiku.get("endpoint", "") or ""))
+        self.ai_key_edit.setText(str(effective_tiku.get("key", "") or ""))
+        self.ai_model_edit.setText(str(effective_tiku.get("model", "") or ""))
+        self.http_proxy_edit.setText(str(effective_tiku.get("http_proxy", "") or ""))
+        self.min_interval_spin.setValue(int(effective_tiku.get("min_interval_seconds", 3) or 3))
+        self.silicon_key_edit.setText(str(effective_tiku.get("siliconflow_key", "") or ""))
+        self.silicon_model_edit.setText(str(effective_tiku.get("siliconflow_model", "") or ""))
+        self.silicon_endpoint_edit.setText(str(effective_tiku.get("siliconflow_endpoint", "") or ""))
+        self.like_model_edit.setText(str(effective_tiku.get("likeapi_model", "") or ""))
+        self.like_retry_times_spin.setValue(int(effective_tiku.get("likeapi_retry_times", 3) or 3))
+        self.like_search_check.setChecked(parse_bool(effective_tiku.get("likeapi_search", False), False))
+        self.like_vision_check.setChecked(parse_bool(effective_tiku.get("likeapi_vision", True), True))
+        self.like_retry_check.setChecked(parse_bool(effective_tiku.get("likeapi_retry", True), True))
+        self.adapter_url_edit.setText(str(effective_tiku.get("url", "") or ""))
         self.true_list_edit.setText(join_csv(list(tiku.get("true_list", DEFAULT_PROFILE["tiku"]["true_list"]))))
         self.false_list_edit.setText(join_csv(list(tiku.get("false_list", DEFAULT_PROFILE["tiku"]["false_list"]))))
         self.provider_chip_panel.set_selected(selected_providers)
+        for key in [
+            "tokens",
+            "endpoint",
+            "key",
+            "model",
+            "http_proxy",
+            "min_interval_seconds",
+            "siliconflow_key",
+            "siliconflow_model",
+            "siliconflow_endpoint",
+            "likeapi_model",
+            "likeapi_retry_times",
+            "likeapi_search",
+            "likeapi_vision",
+            "likeapi_retry",
+            "url",
+        ]:
+            self._set_override_enabled("tiku", key, profile_override_enabled(profile, "tiku", key))
 
-        provider_name = str(notification.get("provider", "") or "")
+        provider_name = str(effective_notification.get("provider", "") or "")
         set_combo_text(self.notification_provider_combo, provider_name if provider_name else "不启用")
-        self.notification_url_edit.setText(str(notification.get("url", "")))
-        self.notification_chat_id_edit.setText(str(notification.get("tg_chat_id", "")))
-        set_notification_target(self.notification_target_combo, str(notification.get("onebot_target_type", "private") or "private"))
-        self.onebot_host_edit.setText(str(notification.get("onebot_host", "127.0.0.1")))
-        self.onebot_port_spin.setValue(int(notification.get("onebot_port", 3001) or 3001))
-        self.onebot_path_edit.setText(str(notification.get("onebot_path", "/") or "/"))
-        self.onebot_access_token_edit.setText(str(notification.get("onebot_access_token", "")))
-        self.onebot_user_id_edit.setText(str(notification.get("onebot_user_id", "")))
-        self.onebot_group_id_edit.setText(str(notification.get("onebot_group_id", "")))
-        self.notify_on_start_check.setChecked(str(notification.get("notify_on_start", False)).lower() == "true")
-        self.notify_on_success_check.setChecked(str(notification.get("notify_on_success", True)).lower() == "true")
-        self.notify_on_failure_check.setChecked(str(notification.get("notify_on_failure", True)).lower() == "true")
-        self.notify_on_stop_check.setChecked(str(notification.get("notify_on_stop", True)).lower() == "true")
-        self.attach_log_file_check.setChecked(str(notification.get("attach_log_file", True)).lower() == "true")
-        self.include_log_excerpt_check.setChecked(str(notification.get("include_log_excerpt", True)).lower() == "true")
+        self.notification_url_edit.setText(str(effective_notification.get("url", "") or ""))
+        self.notification_chat_id_edit.setText(str(effective_notification.get("tg_chat_id", "") or ""))
+        set_notification_target(self.notification_target_combo, str(effective_notification.get("onebot_target_type", "private") or "private"))
+        self.onebot_host_edit.setText(str(effective_notification.get("onebot_host", "127.0.0.1") or "127.0.0.1"))
+        self.onebot_port_spin.setValue(int(effective_notification.get("onebot_port", 3001) or 3001))
+        self.onebot_path_edit.setText(str(effective_notification.get("onebot_path", "/") or "/"))
+        self.onebot_access_token_edit.setText(str(effective_notification.get("onebot_access_token", "") or ""))
+        self.onebot_user_id_edit.setText(str(effective_notification.get("onebot_user_id", "") or ""))
+        self.onebot_group_id_edit.setText(str(effective_notification.get("onebot_group_id", "") or ""))
+        self.notify_on_start_check.setChecked(parse_bool(effective_notification.get("notify_on_start", False), False))
+        self.notify_on_success_check.setChecked(parse_bool(effective_notification.get("notify_on_success", True), True))
+        self.notify_on_failure_check.setChecked(parse_bool(effective_notification.get("notify_on_failure", True), True))
+        self.notify_on_stop_check.setChecked(parse_bool(effective_notification.get("notify_on_stop", True), True))
+        self.attach_log_file_check.setChecked(parse_bool(effective_notification.get("attach_log_file", True), True))
+        self.include_log_excerpt_check.setChecked(parse_bool(effective_notification.get("include_log_excerpt", True), True))
+        for key in [
+            "provider",
+            "url",
+            "tg_chat_id",
+            "onebot_target_type",
+            "onebot_host",
+            "onebot_port",
+            "onebot_path",
+            "onebot_access_token",
+            "onebot_user_id",
+            "onebot_group_id",
+            "notify_on_start",
+            "notify_on_success",
+            "notify_on_failure",
+            "notify_on_stop",
+            "attach_log_file",
+            "include_log_excerpt",
+        ]:
+            self._set_override_enabled("notification", key, profile_override_enabled(profile, "notification", key))
 
         if self._courses:
             self._apply_course_cards(self._courses)
@@ -1486,6 +1622,17 @@ class ProfileEditorPanel(QWidget):
         common = profile.setdefault("common", {})
         tiku = profile.setdefault("tiku", {})
         notification = profile.setdefault("notification", {})
+        overrides = profile.setdefault("overrides", {})
+        tiku_overrides = overrides.setdefault("tiku", {})
+        notification_overrides = overrides.setdefault("notification", {})
+
+        def apply_override(section_data: dict, override_data: dict, section_name: str, key: str, value: object) -> None:
+            if self._override_enabled(section_name, key):
+                section_data[key] = value
+                override_data[key] = True
+            else:
+                section_data.pop(key, None)
+                override_data.pop(key, None)
 
         common["use_cookies"] = self.use_cookies_check.isChecked()
         common["cookies_path"] = self.cookies_path_edit.text().strip()
@@ -1514,41 +1661,48 @@ class ProfileEditorPanel(QWidget):
         tiku["submit"] = self.submit_check.isChecked()
         tiku["cover_rate"] = round(float(self.cover_rate_spin.value()), 2)
         tiku["delay"] = round(float(self.delay_spin.value()), 2)
-        tiku["tokens"] = self.tokens_edit.text().strip()
-        tiku["likeapi_search"] = self.like_search_check.isChecked()
-        tiku["likeapi_vision"] = self.like_vision_check.isChecked()
-        tiku["likeapi_model"] = self.like_model_edit.text().strip()
-        tiku["likeapi_retry"] = self.like_retry_check.isChecked()
-        tiku["likeapi_retry_times"] = int(self.like_retry_times_spin.value())
-        tiku["url"] = self.adapter_url_edit.text().strip()
-        tiku["endpoint"] = self.ai_endpoint_edit.text().strip()
-        tiku["key"] = self.ai_key_edit.text().strip()
-        tiku["model"] = self.ai_model_edit.text().strip()
-        tiku["min_interval_seconds"] = int(self.min_interval_spin.value())
-        tiku["http_proxy"] = self.http_proxy_edit.text().strip()
-        tiku["siliconflow_key"] = self.silicon_key_edit.text().strip()
-        tiku["siliconflow_model"] = self.silicon_model_edit.text().strip()
-        tiku["siliconflow_endpoint"] = self.silicon_endpoint_edit.text().strip()
+        apply_override(tiku, tiku_overrides, "tiku", "tokens", self.tokens_edit.text().strip())
+        apply_override(tiku, tiku_overrides, "tiku", "likeapi_search", self.like_search_check.isChecked())
+        apply_override(tiku, tiku_overrides, "tiku", "likeapi_vision", self.like_vision_check.isChecked())
+        apply_override(tiku, tiku_overrides, "tiku", "likeapi_model", self.like_model_edit.text().strip())
+        apply_override(tiku, tiku_overrides, "tiku", "likeapi_retry", self.like_retry_check.isChecked())
+        apply_override(tiku, tiku_overrides, "tiku", "likeapi_retry_times", int(self.like_retry_times_spin.value()))
+        apply_override(tiku, tiku_overrides, "tiku", "url", self.adapter_url_edit.text().strip())
+        apply_override(tiku, tiku_overrides, "tiku", "endpoint", self.ai_endpoint_edit.text().strip())
+        apply_override(tiku, tiku_overrides, "tiku", "key", self.ai_key_edit.text().strip())
+        apply_override(tiku, tiku_overrides, "tiku", "model", self.ai_model_edit.text().strip())
+        apply_override(tiku, tiku_overrides, "tiku", "min_interval_seconds", int(self.min_interval_spin.value()))
+        apply_override(tiku, tiku_overrides, "tiku", "http_proxy", self.http_proxy_edit.text().strip())
+        apply_override(tiku, tiku_overrides, "tiku", "siliconflow_key", self.silicon_key_edit.text().strip())
+        apply_override(tiku, tiku_overrides, "tiku", "siliconflow_model", self.silicon_model_edit.text().strip())
+        apply_override(tiku, tiku_overrides, "tiku", "siliconflow_endpoint", self.silicon_endpoint_edit.text().strip())
         tiku["true_list"] = split_csv(self.true_list_edit.text())
         tiku["false_list"] = split_csv(self.false_list_edit.text())
 
         notification_provider = self.notification_provider_combo.currentText().strip()
-        notification["provider"] = "" if notification_provider == "不启用" else notification_provider
-        notification["url"] = self.notification_url_edit.text().strip()
-        notification["tg_chat_id"] = self.notification_chat_id_edit.text().strip()
-        notification["onebot_target_type"] = get_notification_target(self.notification_target_combo)
-        notification["onebot_host"] = self.onebot_host_edit.text().strip() or "127.0.0.1"
-        notification["onebot_port"] = int(self.onebot_port_spin.value())
-        notification["onebot_path"] = self.onebot_path_edit.text().strip() or "/"
-        notification["onebot_access_token"] = self.onebot_access_token_edit.text().strip()
-        notification["onebot_user_id"] = self.onebot_user_id_edit.text().strip()
-        notification["onebot_group_id"] = self.onebot_group_id_edit.text().strip()
-        notification["notify_on_start"] = self.notify_on_start_check.isChecked()
-        notification["notify_on_success"] = self.notify_on_success_check.isChecked()
-        notification["notify_on_failure"] = self.notify_on_failure_check.isChecked()
-        notification["notify_on_stop"] = self.notify_on_stop_check.isChecked()
-        notification["attach_log_file"] = self.attach_log_file_check.isChecked()
-        notification["include_log_excerpt"] = self.include_log_excerpt_check.isChecked()
+        apply_override(notification, notification_overrides, "notification", "provider", "" if notification_provider == "不启用" else notification_provider)
+        apply_override(notification, notification_overrides, "notification", "url", self.notification_url_edit.text().strip())
+        apply_override(notification, notification_overrides, "notification", "tg_chat_id", self.notification_chat_id_edit.text().strip())
+        apply_override(notification, notification_overrides, "notification", "onebot_target_type", get_notification_target(self.notification_target_combo))
+        apply_override(notification, notification_overrides, "notification", "onebot_host", self.onebot_host_edit.text().strip() or "127.0.0.1")
+        apply_override(notification, notification_overrides, "notification", "onebot_port", int(self.onebot_port_spin.value()))
+        apply_override(notification, notification_overrides, "notification", "onebot_path", self.onebot_path_edit.text().strip() or "/")
+        apply_override(notification, notification_overrides, "notification", "onebot_access_token", self.onebot_access_token_edit.text().strip())
+        apply_override(notification, notification_overrides, "notification", "onebot_user_id", self.onebot_user_id_edit.text().strip())
+        apply_override(notification, notification_overrides, "notification", "onebot_group_id", self.onebot_group_id_edit.text().strip())
+        apply_override(notification, notification_overrides, "notification", "notify_on_start", self.notify_on_start_check.isChecked())
+        apply_override(notification, notification_overrides, "notification", "notify_on_success", self.notify_on_success_check.isChecked())
+        apply_override(notification, notification_overrides, "notification", "notify_on_failure", self.notify_on_failure_check.isChecked())
+        apply_override(notification, notification_overrides, "notification", "notify_on_stop", self.notify_on_stop_check.isChecked())
+        apply_override(notification, notification_overrides, "notification", "attach_log_file", self.attach_log_file_check.isChecked())
+        apply_override(notification, notification_overrides, "notification", "include_log_excerpt", self.include_log_excerpt_check.isChecked())
+
+        if not tiku_overrides:
+            overrides.pop("tiku", None)
+        if not notification_overrides:
+            overrides.pop("notification", None)
+        if not overrides:
+            profile.pop("overrides", None)
         return profile
 
     def save_profile(self) -> None:
