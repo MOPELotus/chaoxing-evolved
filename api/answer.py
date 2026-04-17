@@ -1,4 +1,6 @@
+import base64
 import json
+import mimetypes
 import os
 import random
 import re
@@ -9,6 +11,7 @@ import time
 from pathlib import Path
 from re import sub
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 import requests
@@ -26,6 +29,14 @@ __all__ = ["CacheDAO", "Tiku", "TikuYanxi", "TikuLike", "TikuAdapter", "AI", "Si
 
 IMG_TAG_PATTERN = re.compile(r'<img\b[^>]*?\bsrc=["\']([^"\']+)["\'][^>]*>', re.IGNORECASE)
 HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
+DEFAULT_IMAGE_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    )
+}
+IMAGE_DATA_URL_CACHE: dict[str, str] = {}
+IMAGE_DATA_URL_LOCK = threading.RLock()
 
 
 def normalize_question_title(title: str) -> str:
@@ -77,7 +88,7 @@ def normalize_prompt_options(options: str | list[str] | None) -> str:
 
 def build_multimodal_user_content(text: str, image_urls: list[str] | None = None) -> str | list[dict]:
     cleaned_text = (text or "").strip()
-    unique_urls = [url for url in image_urls or [] if url]
+    unique_urls = [url for url in prepare_multimodal_image_urls(image_urls or []) if url]
     if not unique_urls:
         return cleaned_text
 
@@ -118,6 +129,65 @@ def strip_images_from_messages(messages: list[dict]) -> list[dict]:
         normalized_message["content"] = "\n".join(part for part in text_parts if part).strip()
         normalized_messages.append(normalized_message)
     return normalized_messages
+
+
+def _image_request_headers(url: str) -> dict[str, str]:
+    headers = dict(DEFAULT_IMAGE_HEADERS)
+    host = urlparse(url).netloc.lower()
+    if "chaoxing.com" in host:
+        headers["Referer"] = "https://p.ananas.chaoxing.com/"
+    return headers
+
+
+def _guess_image_mime_type(url: str, response: requests.Response) -> str:
+    content_type = response.headers.get("Content-Type", "").split(";")[0].strip().lower()
+    if content_type.startswith("image/"):
+        return content_type
+
+    guessed, _ = mimetypes.guess_type(url)
+    if guessed and guessed.startswith("image/"):
+        return guessed
+    return "image/png"
+
+
+def image_url_to_data_url(url: str, timeout: int = 15) -> str:
+    if not url:
+        return url
+    if url.startswith("data:"):
+        return url
+    if not url.lower().startswith(("http://", "https://")):
+        return url
+
+    with IMAGE_DATA_URL_LOCK:
+        cached = IMAGE_DATA_URL_CACHE.get(url)
+        if cached:
+            return cached
+
+    response = requests.get(
+        url,
+        headers=_image_request_headers(url),
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    mime_type = _guess_image_mime_type(url, response)
+    data_url = f"data:{mime_type};base64,{base64.b64encode(response.content).decode('ascii')}"
+
+    with IMAGE_DATA_URL_LOCK:
+        IMAGE_DATA_URL_CACHE[url] = data_url
+    return data_url
+
+
+def prepare_multimodal_image_urls(image_urls: list[str]) -> list[str]:
+    prepared_urls: list[str] = []
+    for url in image_urls:
+        if not url:
+            continue
+        try:
+            prepared_urls.append(image_url_to_data_url(url))
+        except Exception as exc:
+            logger.warning(f"图片转 base64 失败，回退为原始链接：{url} -> {exc}")
+            prepared_urls.append(url)
+    return prepared_urls
 
 
 def parse_provider_names(provider_value: Optional[str]) -> list[str]:
