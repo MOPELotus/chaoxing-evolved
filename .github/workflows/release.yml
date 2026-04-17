@@ -1,0 +1,129 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Release tag name
+        required: true
+        type: string
+      release_name:
+        description: Optional release title
+        required: false
+        type: string
+      prerelease:
+        description: Mark this release as prerelease
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip install nuitka ordered-set zstandard
+
+      - name: Build desktop application with Nuitka
+        shell: powershell
+        run: |
+          python -m nuitka `
+            --standalone `
+            --assume-yes-for-downloads `
+            --enable-plugin=pyqt5 `
+            --windows-console-mode=disable `
+            --show-progress `
+            --include-package=api `
+            --include-package=desktop `
+            --include-data-dir=resource=resource `
+            --output-dir=build `
+            --output-filename=ChaoxingDesktop.exe `
+            desktop_app.py
+
+      - name: Prepare release assets
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          $distDir = Get-ChildItem -Path build -Directory | Where-Object { $_.Name -like '*.dist' } | Select-Object -First 1
+          if (-not $distDir) {
+            throw '未找到 Nuitka 构建输出目录。'
+          }
+
+          $archiveName = "chaoxing-evolved-windows-x64-${{ inputs.tag_name }}.zip"
+          $archivePath = Join-Path (Resolve-Path release) $archiveName
+          Compress-Archive -Path (Join-Path $distDir.FullName '*') -DestinationPath $archivePath -Force
+
+          $notes = @"
+          本次版本由 GitHub Actions 手动触发编译生成。
+
+          - 目标平台：Windows x64
+          - 构建方式：Nuitka standalone
+          - 触发分支：${{ github.ref_name }}
+          - 提交哈希：${{ github.sha }}
+
+          最近提交：
+          $(git log --oneline -20)
+          "@
+          Set-Content -Path release\RELEASE_NOTES.md -Value $notes -Encoding UTF8
+
+      - name: Upload release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-bundle
+          path: |
+            release/*.zip
+            release/RELEASE_NOTES.md
+          if-no-files-found: error
+
+  release:
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Download release bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: release-bundle
+          path: release
+
+      - name: Prepare release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          RELEASE_NAME="${{ inputs.release_name }}"
+          if [ -z "$RELEASE_NAME" ]; then
+            RELEASE_NAME="${{ inputs.tag_name }}"
+          fi
+          echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag_name }}
+          target_commitish: ${{ github.sha }}
+          name: ${{ steps.meta.outputs.release_name }}
+          body_path: release/RELEASE_NOTES.md
+          prerelease: ${{ inputs.prerelease }}
+          files: release/*.zip
