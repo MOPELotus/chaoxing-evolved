@@ -204,9 +204,13 @@ def profile_sidecar_paths(name: str) -> list[Path]:
     ]
 
 
+def _is_profile_config_path(path: Path) -> bool:
+    return path.is_file() and path.suffix == ".json" and not path.name.endswith(".cache.json")
+
+
 def list_json_profiles() -> list[Path]:
     ensure_desktop_state()
-    return sorted(JSON_PROFILE_DIR.glob("*.json"))
+    return sorted(path for path in JSON_PROFILE_DIR.glob("*.json") if _is_profile_config_path(path))
 
 
 def load_json_file(path: Path, default: dict) -> dict:
