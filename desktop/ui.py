@@ -81,7 +81,12 @@ NOTOPEN_ACTION_LABELS = {
     "ask": "人工确认",
 }
 NOTOPEN_ACTION_VALUE_BY_LABEL = {label: value for value, label in NOTOPEN_ACTION_LABELS.items()}
-NOTIFICATION_PROVIDER_OPTIONS = ["不启用", "ServerChan", "Qmsg", "Bark", "Telegram"]
+NOTIFICATION_PROVIDER_OPTIONS = ["不启用", "ServerChan", "Qmsg", "Bark", "Telegram", "OneBotV11"]
+NOTIFICATION_TARGET_LABELS = {
+    "private": "QQ 私聊",
+    "group": "QQ群",
+}
+NOTIFICATION_TARGET_VALUE_BY_LABEL = {label: value for value, label in NOTIFICATION_TARGET_LABELS.items()}
 STATUS_LABELS = {
     "running": "运行中",
     "completed": "已完成",
@@ -110,6 +115,14 @@ def set_notopen_action(combo: ComboBox, value: str) -> None:
 
 def get_notopen_action(combo: ComboBox) -> str:
     return NOTOPEN_ACTION_VALUE_BY_LABEL.get(combo.currentText().strip(), "retry")
+
+
+def set_notification_target(combo: ComboBox, value: str) -> None:
+    set_combo_text(combo, NOTIFICATION_TARGET_LABELS.get(value, NOTIFICATION_TARGET_LABELS["private"]))
+
+
+def get_notification_target(combo: ComboBox) -> str:
+    return NOTIFICATION_TARGET_VALUE_BY_LABEL.get(combo.currentText().strip(), "private")
 
 
 def exec_dialog(dialog) -> int:
@@ -734,6 +747,7 @@ class HomePage(PageFrame):
                     f"配置目录：{JSON_PROFILE_DIR}",
                     f"全局设置：{PROJECT_ROOT / 'desktop_state' / 'global_settings.json'}",
                     "缓存文件：按配置自动生成在 profiles 目录中",
+                    f"运行日志：{PROJECT_ROOT / 'desktop_state' / 'logs'}",
                 ]
             )
         )
@@ -1091,12 +1105,46 @@ class ProfileEditorPanel(QWidget):
         self.notification_provider_combo = ComboBox(self.notification_card)
         self.notification_provider_combo.addItems(NOTIFICATION_PROVIDER_OPTIONS)
         self.notification_url_edit = LineEdit(self.notification_card)
-        self.notification_url_edit.setPlaceholderText("推送地址")
+        self.notification_url_edit.setPlaceholderText("HTTP 推送地址或 Telegram Bot API 地址")
         self.notification_chat_id_edit = LineEdit(self.notification_card)
         self.notification_chat_id_edit.setPlaceholderText("Telegram 会话 ID")
+        self.notification_target_combo = ComboBox(self.notification_card)
+        self.notification_target_combo.addItems(list(NOTIFICATION_TARGET_LABELS.values()))
+        self.onebot_host_edit = LineEdit(self.notification_card)
+        self.onebot_host_edit.setPlaceholderText("OneBot 反向 WS 监听地址")
+        self.onebot_port_spin = SpinBox(self.notification_card)
+        self.onebot_port_spin.setRange(1, 65535)
+        self.onebot_path_edit = LineEdit(self.notification_card)
+        self.onebot_path_edit.setPlaceholderText("OneBot 反向 WS 路径")
+        self.onebot_access_token_edit = LineEdit(self.notification_card)
+        self.onebot_access_token_edit.setPlaceholderText("OneBot Access Token")
+        self.onebot_user_id_edit = LineEdit(self.notification_card)
+        self.onebot_user_id_edit.setPlaceholderText("接收通知的 QQ 号")
+        self.onebot_group_id_edit = LineEdit(self.notification_card)
+        self.onebot_group_id_edit.setPlaceholderText("接收通知的群号")
+        self.notify_on_start_check = CheckBox("任务启动时推送通知", self.notification_card)
+        self.notify_on_success_check = CheckBox("任务成功时推送通知", self.notification_card)
+        self.notify_on_failure_check = CheckBox("任务异常时推送通知", self.notification_card)
+        self.notify_on_stop_check = CheckBox("任务停止时推送通知", self.notification_card)
+        self.attach_log_file_check = CheckBox("推送日志文件", self.notification_card)
+        self.include_log_excerpt_check = CheckBox("附带日志摘要", self.notification_card)
+
         grid.addWidget(make_field("通知提供方", self.notification_provider_combo), 0, 0)
         grid.addWidget(make_field("通知地址", self.notification_url_edit), 1, 0, 1, 2)
         grid.addWidget(make_field("Telegram 会话 ID", self.notification_chat_id_edit), 2, 0)
+        grid.addWidget(make_field("OneBot 目标类型", self.notification_target_combo), 2, 1)
+        grid.addWidget(make_field("OneBot 监听地址", self.onebot_host_edit), 3, 0)
+        grid.addWidget(make_field("OneBot 监听端口", self.onebot_port_spin), 3, 1)
+        grid.addWidget(make_field("OneBot 路径", self.onebot_path_edit), 4, 0)
+        grid.addWidget(make_field("OneBot Access Token", self.onebot_access_token_edit), 4, 1)
+        grid.addWidget(make_field("QQ 号", self.onebot_user_id_edit), 5, 0)
+        grid.addWidget(make_field("群号", self.onebot_group_id_edit), 5, 1)
+        grid.addWidget(self.notify_on_start_check, 6, 0)
+        grid.addWidget(self.notify_on_success_check, 6, 1)
+        grid.addWidget(self.notify_on_failure_check, 7, 0)
+        grid.addWidget(self.notify_on_stop_check, 7, 1)
+        grid.addWidget(self.attach_log_file_check, 8, 0)
+        grid.addWidget(self.include_log_excerpt_check, 8, 1)
         self.notification_card.body_layout.addLayout(grid)
         self.scroll_layout.addWidget(self.notification_card)
 
@@ -1104,6 +1152,19 @@ class ProfileEditorPanel(QWidget):
             self.notification_provider_combo,
             self.notification_url_edit,
             self.notification_chat_id_edit,
+            self.notification_target_combo,
+            self.onebot_host_edit,
+            self.onebot_port_spin,
+            self.onebot_path_edit,
+            self.onebot_access_token_edit,
+            self.onebot_user_id_edit,
+            self.onebot_group_id_edit,
+            self.notify_on_start_check,
+            self.notify_on_success_check,
+            self.notify_on_failure_check,
+            self.notify_on_stop_check,
+            self.attach_log_file_check,
+            self.include_log_excerpt_check,
         )
 
     def _build_json_card(self) -> None:
@@ -1197,6 +1258,19 @@ class ProfileEditorPanel(QWidget):
             self.notification_provider_combo,
             self.notification_url_edit,
             self.notification_chat_id_edit,
+            self.notification_target_combo,
+            self.onebot_host_edit,
+            self.onebot_port_spin,
+            self.onebot_path_edit,
+            self.onebot_access_token_edit,
+            self.onebot_user_id_edit,
+            self.onebot_group_id_edit,
+            self.notify_on_start_check,
+            self.notify_on_success_check,
+            self.notify_on_failure_check,
+            self.notify_on_stop_check,
+            self.attach_log_file_check,
+            self.include_log_excerpt_check,
             self.toggle_json_button,
         ]:
             widget.setEnabled(enabled)
@@ -1250,6 +1324,19 @@ class ProfileEditorPanel(QWidget):
         set_combo_text(self.notification_provider_combo, "不启用")
         self.notification_url_edit.clear()
         self.notification_chat_id_edit.clear()
+        set_notification_target(self.notification_target_combo, "private")
+        self.onebot_host_edit.setText(str(DEFAULT_PROFILE["notification"]["onebot_host"]))
+        self.onebot_port_spin.setValue(int(DEFAULT_PROFILE["notification"]["onebot_port"]))
+        self.onebot_path_edit.setText(str(DEFAULT_PROFILE["notification"]["onebot_path"]))
+        self.onebot_access_token_edit.clear()
+        self.onebot_user_id_edit.clear()
+        self.onebot_group_id_edit.clear()
+        self.notify_on_start_check.setChecked(bool(DEFAULT_PROFILE["notification"]["notify_on_start"]))
+        self.notify_on_success_check.setChecked(bool(DEFAULT_PROFILE["notification"]["notify_on_success"]))
+        self.notify_on_failure_check.setChecked(bool(DEFAULT_PROFILE["notification"]["notify_on_failure"]))
+        self.notify_on_stop_check.setChecked(bool(DEFAULT_PROFILE["notification"]["notify_on_stop"]))
+        self.attach_log_file_check.setChecked(bool(DEFAULT_PROFILE["notification"]["attach_log_file"]))
+        self.include_log_excerpt_check.setChecked(bool(DEFAULT_PROFILE["notification"]["include_log_excerpt"]))
         self.json_editor.clear()
         self.course_chip_panel.set_items([], [])
         self.course_status.setText("尚未获取课程列表。")
@@ -1316,6 +1403,19 @@ class ProfileEditorPanel(QWidget):
         set_combo_text(self.notification_provider_combo, provider_name if provider_name else "不启用")
         self.notification_url_edit.setText(str(notification.get("url", "")))
         self.notification_chat_id_edit.setText(str(notification.get("tg_chat_id", "")))
+        set_notification_target(self.notification_target_combo, str(notification.get("onebot_target_type", "private") or "private"))
+        self.onebot_host_edit.setText(str(notification.get("onebot_host", "127.0.0.1")))
+        self.onebot_port_spin.setValue(int(notification.get("onebot_port", 3001) or 3001))
+        self.onebot_path_edit.setText(str(notification.get("onebot_path", "/") or "/"))
+        self.onebot_access_token_edit.setText(str(notification.get("onebot_access_token", "")))
+        self.onebot_user_id_edit.setText(str(notification.get("onebot_user_id", "")))
+        self.onebot_group_id_edit.setText(str(notification.get("onebot_group_id", "")))
+        self.notify_on_start_check.setChecked(str(notification.get("notify_on_start", False)).lower() == "true")
+        self.notify_on_success_check.setChecked(str(notification.get("notify_on_success", True)).lower() == "true")
+        self.notify_on_failure_check.setChecked(str(notification.get("notify_on_failure", True)).lower() == "true")
+        self.notify_on_stop_check.setChecked(str(notification.get("notify_on_stop", True)).lower() == "true")
+        self.attach_log_file_check.setChecked(str(notification.get("attach_log_file", True)).lower() == "true")
+        self.include_log_excerpt_check.setChecked(str(notification.get("include_log_excerpt", True)).lower() == "true")
 
         if self._courses:
             self._apply_course_cards(self._courses)
@@ -1418,6 +1518,19 @@ class ProfileEditorPanel(QWidget):
         notification["provider"] = "" if notification_provider == "不启用" else notification_provider
         notification["url"] = self.notification_url_edit.text().strip()
         notification["tg_chat_id"] = self.notification_chat_id_edit.text().strip()
+        notification["onebot_target_type"] = get_notification_target(self.notification_target_combo)
+        notification["onebot_host"] = self.onebot_host_edit.text().strip() or "127.0.0.1"
+        notification["onebot_port"] = int(self.onebot_port_spin.value())
+        notification["onebot_path"] = self.onebot_path_edit.text().strip() or "/"
+        notification["onebot_access_token"] = self.onebot_access_token_edit.text().strip()
+        notification["onebot_user_id"] = self.onebot_user_id_edit.text().strip()
+        notification["onebot_group_id"] = self.onebot_group_id_edit.text().strip()
+        notification["notify_on_start"] = self.notify_on_start_check.isChecked()
+        notification["notify_on_success"] = self.notify_on_success_check.isChecked()
+        notification["notify_on_failure"] = self.notify_on_failure_check.isChecked()
+        notification["notify_on_stop"] = self.notify_on_stop_check.isChecked()
+        notification["attach_log_file"] = self.attach_log_file_check.isChecked()
+        notification["include_log_excerpt"] = self.include_log_excerpt_check.isChecked()
         return profile
 
     def save_profile(self) -> None:
@@ -2094,12 +2207,45 @@ class GlobalSettingsPage(PageFrame):
         self.notification_provider_combo = ComboBox(self.notification_card)
         self.notification_provider_combo.addItems(NOTIFICATION_PROVIDER_OPTIONS)
         self.notification_url_edit = LineEdit(self.notification_card)
-        self.notification_url_edit.setPlaceholderText("默认通知地址")
+        self.notification_url_edit.setPlaceholderText("默认 HTTP 推送地址或 Telegram Bot API 地址")
         self.notification_chat_id_edit = LineEdit(self.notification_card)
         self.notification_chat_id_edit.setPlaceholderText("默认 Telegram 会话 ID")
+        self.notification_target_combo = ComboBox(self.notification_card)
+        self.notification_target_combo.addItems(list(NOTIFICATION_TARGET_LABELS.values()))
+        self.onebot_host_edit = LineEdit(self.notification_card)
+        self.onebot_host_edit.setPlaceholderText("默认 OneBot 监听地址")
+        self.onebot_port_spin = SpinBox(self.notification_card)
+        self.onebot_port_spin.setRange(1, 65535)
+        self.onebot_path_edit = LineEdit(self.notification_card)
+        self.onebot_path_edit.setPlaceholderText("默认 OneBot 路径")
+        self.onebot_access_token_edit = LineEdit(self.notification_card)
+        self.onebot_access_token_edit.setPlaceholderText("默认 OneBot Access Token")
+        self.onebot_user_id_edit = LineEdit(self.notification_card)
+        self.onebot_user_id_edit.setPlaceholderText("默认 QQ 号")
+        self.onebot_group_id_edit = LineEdit(self.notification_card)
+        self.onebot_group_id_edit.setPlaceholderText("默认群号")
+        self.notify_on_start_check = CheckBox("默认在任务启动时推送通知", self.notification_card)
+        self.notify_on_success_check = CheckBox("默认在任务成功时推送通知", self.notification_card)
+        self.notify_on_failure_check = CheckBox("默认在任务异常时推送通知", self.notification_card)
+        self.notify_on_stop_check = CheckBox("默认在任务停止时推送通知", self.notification_card)
+        self.attach_log_file_check = CheckBox("默认推送日志文件", self.notification_card)
+        self.include_log_excerpt_check = CheckBox("默认附带日志摘要", self.notification_card)
         grid.addWidget(make_field("通知提供方", self.notification_provider_combo), 0, 0)
         grid.addWidget(make_field("通知地址", self.notification_url_edit), 1, 0, 1, 2)
         grid.addWidget(make_field("Telegram 会话 ID", self.notification_chat_id_edit), 2, 0)
+        grid.addWidget(make_field("OneBot 目标类型", self.notification_target_combo), 2, 1)
+        grid.addWidget(make_field("OneBot 监听地址", self.onebot_host_edit), 3, 0)
+        grid.addWidget(make_field("OneBot 监听端口", self.onebot_port_spin), 3, 1)
+        grid.addWidget(make_field("OneBot 路径", self.onebot_path_edit), 4, 0)
+        grid.addWidget(make_field("OneBot Access Token", self.onebot_access_token_edit), 4, 1)
+        grid.addWidget(make_field("QQ 号", self.onebot_user_id_edit), 5, 0)
+        grid.addWidget(make_field("群号", self.onebot_group_id_edit), 5, 1)
+        grid.addWidget(self.notify_on_start_check, 6, 0)
+        grid.addWidget(self.notify_on_success_check, 6, 1)
+        grid.addWidget(self.notify_on_failure_check, 7, 0)
+        grid.addWidget(self.notify_on_stop_check, 7, 1)
+        grid.addWidget(self.attach_log_file_check, 8, 0)
+        grid.addWidget(self.include_log_excerpt_check, 8, 1)
         self.notification_card.body_layout.addLayout(grid)
         self.scroll_layout.addWidget(self.notification_card)
 
@@ -2129,6 +2275,19 @@ class GlobalSettingsPage(PageFrame):
         set_combo_text(self.notification_provider_combo, provider_name if provider_name else "不启用")
         self.notification_url_edit.setText(str(notification.get("url", "")))
         self.notification_chat_id_edit.setText(str(notification.get("tg_chat_id", "")))
+        set_notification_target(self.notification_target_combo, str(notification.get("onebot_target_type", "private") or "private"))
+        self.onebot_host_edit.setText(str(notification.get("onebot_host", "127.0.0.1")))
+        self.onebot_port_spin.setValue(int(notification.get("onebot_port", 3001) or 3001))
+        self.onebot_path_edit.setText(str(notification.get("onebot_path", "/") or "/"))
+        self.onebot_access_token_edit.setText(str(notification.get("onebot_access_token", "")))
+        self.onebot_user_id_edit.setText(str(notification.get("onebot_user_id", "")))
+        self.onebot_group_id_edit.setText(str(notification.get("onebot_group_id", "")))
+        self.notify_on_start_check.setChecked(str(notification.get("notify_on_start", "false")).lower() == "true")
+        self.notify_on_success_check.setChecked(str(notification.get("notify_on_success", "true")).lower() == "true")
+        self.notify_on_failure_check.setChecked(str(notification.get("notify_on_failure", "true")).lower() == "true")
+        self.notify_on_stop_check.setChecked(str(notification.get("notify_on_stop", "true")).lower() == "true")
+        self.attach_log_file_check.setChecked(str(notification.get("attach_log_file", "true")).lower() == "true")
+        self.include_log_excerpt_check.setChecked(str(notification.get("include_log_excerpt", "true")).lower() == "true")
 
     def save_settings(self) -> None:
         settings = deepcopy(DEFAULT_GLOBAL_SETTINGS)
@@ -2157,6 +2316,19 @@ class GlobalSettingsPage(PageFrame):
                 "provider": "" if provider_name == "不启用" else provider_name,
                 "url": self.notification_url_edit.text().strip(),
                 "tg_chat_id": self.notification_chat_id_edit.text().strip(),
+                "onebot_target_type": get_notification_target(self.notification_target_combo),
+                "onebot_host": self.onebot_host_edit.text().strip() or "127.0.0.1",
+                "onebot_port": int(self.onebot_port_spin.value()),
+                "onebot_path": self.onebot_path_edit.text().strip() or "/",
+                "onebot_access_token": self.onebot_access_token_edit.text().strip(),
+                "onebot_user_id": self.onebot_user_id_edit.text().strip(),
+                "onebot_group_id": self.onebot_group_id_edit.text().strip(),
+                "notify_on_start": "true" if self.notify_on_start_check.isChecked() else "false",
+                "notify_on_success": "true" if self.notify_on_success_check.isChecked() else "false",
+                "notify_on_failure": "true" if self.notify_on_failure_check.isChecked() else "false",
+                "notify_on_stop": "true" if self.notify_on_stop_check.isChecked() else "false",
+                "attach_log_file": "true" if self.attach_log_file_check.isChecked() else "false",
+                "include_log_excerpt": "true" if self.include_log_excerpt_check.isChecked() else "false",
             }
         )
         save_global_settings(settings)

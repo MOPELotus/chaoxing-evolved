@@ -13,3 +13,4 @@ urllib3>=2.5.0
 chardet>=3.0.2,<6.0.0
 PyQt5>=5.15.11
 PyQt-Fluent-Widgets>=1.8.7
+websockets>=15.0.1

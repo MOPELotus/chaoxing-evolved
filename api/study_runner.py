@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import enum
+import os
 import threading
 import time
 import traceback
@@ -52,6 +53,10 @@ def to_bool(value: object) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def should_send_internal_notifications() -> bool:
+    return os.environ.get("DESKTOP_MANAGED_RUN", "").strip().lower() not in {"1", "true", "yes", "on"}
 
 
 def _normalize_common_config(section: dict[str, Any]) -> dict[str, Any]:
@@ -373,17 +378,19 @@ def run_loaded_profile(profile: dict, global_settings: dict | None = None) -> No
             process_course(chaoxing, course, common_config)
 
         logger.info("所有课程学习任务已完成")
-        notification.send("chaoxing : 所有课程学习任务已完成")
+        if should_send_internal_notifications():
+            notification.send("chaoxing : 所有课程学习任务已完成")
     except KeyboardInterrupt as exc:
         logger.error(f"错误: 程序被用户手动中断, {exc}")
         raise
     except BaseException as exc:
         logger.error(f"错误: {type(exc).__name__}: {exc}")
         logger.error(traceback.format_exc())
-        try:
-            notification.send(f"chaoxing : 出现错误 {type(exc).__name__}: {exc}\n{traceback.format_exc()}")
-        except Exception:
-            pass
+        if should_send_internal_notifications():
+            try:
+                notification.send(f"chaoxing : 出现错误 {type(exc).__name__}: {exc}\n{traceback.format_exc()}")
+            except Exception:
+                pass
         raise
 
 

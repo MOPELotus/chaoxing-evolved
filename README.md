@@ -11,6 +11,7 @@
 - JSON 配置：前台统一使用 `desktop_state/profiles/*.json`
 - 原生运行链路：桌面端直接读取 JSON 配置执行任务
 - 全局设置：题库、AI、通知等默认凭据集中维护
+- 通知能力：支持 OneBot v11 反向 WebSocket，可推送到 QQ 私聊或群聊
 - 多题库协同：支持 `MultiTiku` 与仲裁题库
 - 课程块选择：刷新课程列表后直接按标签选择课程
 - 批量操作：支持批量启动、批量停止、批量删除
@@ -53,12 +54,16 @@ desktop_state/
     user2.json
     user1.cookies.txt
     user1.cache.json
+  logs/
+    user1/
+      20260417-090000-ab12cd34.log
 ```
 
 说明：
 
 - `profiles/*.json` 是桌面端主配置
 - `*.cookies.txt` 与 `*.cache.json` 会按配置名自动生成，用于隔离登录状态和题库缓存
+- `logs/` 用于保存每次运行的独立日志文件，可用于通知推送和问题排查
 
 ## 使用建议
 
