@@ -144,3 +144,4 @@ chaoxing.log
 *.cookies.txt
 *.cache.json
 /desktop_state/
+/.nuitka-cache/
