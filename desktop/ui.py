@@ -190,6 +190,22 @@ def parse_bool(value: object, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def config_value_or_default(value: object, default: object) -> object:
+    if value is None:
+        return default
+    if isinstance(value, str) and value.strip() == "":
+        return default
+    return value
+
+
+def config_float(value: object, default: float) -> float:
+    return float(config_value_or_default(value, default))
+
+
+def config_int(value: object, default: int) -> int:
+    return int(config_value_or_default(value, default))
+
+
 def set_combo_text(combo: ComboBox, value: str, fallback_index: int = 0) -> None:
     index = combo.findText(value)
     combo.setCurrentIndex(index if index >= 0 else fallback_index)
@@ -1103,7 +1119,7 @@ class ProfileEditorPanel(QWidget):
         self.check_connection_check = CheckBox("启动时检查大模型连接", self.tiku_card)
         self.submit_check = CheckBox("达到覆盖率后自动提交", self.tiku_card)
         self.cover_rate_spin = DoubleSpinBox(self.tiku_card)
-        self.cover_rate_spin.setRange(0.1, 1.0)
+        self.cover_rate_spin.setRange(0.0, 1.0)
         self.cover_rate_spin.setDecimals(2)
         self.cover_rate_spin.setSingleStep(0.05)
         self.delay_spin = DoubleSpinBox(self.tiku_card)
@@ -1494,12 +1510,12 @@ class ProfileEditorPanel(QWidget):
         self.ai_key_edit.setText(str(tiku_defaults.get("key", "") or ""))
         self.ai_model_edit.setText(str(tiku_defaults.get("model", "") or ""))
         self.http_proxy_edit.setText(str(tiku_defaults.get("http_proxy", "") or ""))
-        self.min_interval_spin.setValue(int(tiku_defaults.get("min_interval_seconds", 3) or 3))
+        self.min_interval_spin.setValue(config_int(tiku_defaults.get("min_interval_seconds", 3), 3))
         self.silicon_key_edit.setText(str(tiku_defaults.get("siliconflow_key", "") or ""))
         self.silicon_model_edit.setText(str(tiku_defaults.get("siliconflow_model", "") or ""))
         self.silicon_endpoint_edit.setText(str(tiku_defaults.get("siliconflow_endpoint", "") or ""))
         self.like_model_edit.setText(str(tiku_defaults.get("likeapi_model", "") or ""))
-        self.like_retry_times_spin.setValue(int(tiku_defaults.get("likeapi_retry_times", 3) or 3))
+        self.like_retry_times_spin.setValue(config_int(tiku_defaults.get("likeapi_retry_times", 3), 3))
         self.like_search_check.setChecked(parse_bool(tiku_defaults.get("likeapi_search", False), False))
         self.like_vision_check.setChecked(parse_bool(tiku_defaults.get("likeapi_vision", True), True))
         self.like_retry_check.setChecked(parse_bool(tiku_defaults.get("likeapi_retry", True), True))
@@ -1513,7 +1529,7 @@ class ProfileEditorPanel(QWidget):
         self.notification_chat_id_edit.setText(str(notification_defaults.get("tg_chat_id", "") or ""))
         set_notification_target(self.notification_target_combo, str(notification_defaults.get("onebot_target_type", "private") or "private"))
         self.onebot_host_edit.setText(str(notification_defaults.get("onebot_host", "127.0.0.1") or "127.0.0.1"))
-        self.onebot_port_spin.setValue(int(notification_defaults.get("onebot_port", 3001) or 3001))
+        self.onebot_port_spin.setValue(config_int(notification_defaults.get("onebot_port", 3001), 3001))
         self.onebot_path_edit.setText(str(notification_defaults.get("onebot_path", "/") or "/"))
         self.onebot_access_token_edit.setText(str(notification_defaults.get("onebot_access_token", "") or ""))
         self.onebot_user_id_edit.setText(str(notification_defaults.get("onebot_user_id", "") or ""))
@@ -1556,8 +1572,8 @@ class ProfileEditorPanel(QWidget):
         self.use_cookies_check.setChecked(bool(common.get("use_cookies", False)))
         self.username_edit.setText(str(common.get("username", "")))
         self.password_edit.setText(str(common.get("password", "")))
-        self.speed_spin.setValue(float(common.get("speed", 1.0) or 1.0))
-        self.jobs_spin.setValue(int(common.get("jobs", 4) or 4))
+        self.speed_spin.setValue(config_float(common.get("speed", 1.0), 1.0))
+        self.jobs_spin.setValue(config_int(common.get("jobs", 4), 4))
         set_notopen_action(self.notopen_combo, str(common.get("notopen_action", "retry") or "retry"))
         self.cookies_path_edit.setText(str(common.get("cookies_path", "")))
         self.cache_path_edit.setText(str(common.get("cache_path", "")))
@@ -1570,19 +1586,19 @@ class ProfileEditorPanel(QWidget):
         set_combo_text(self.decision_provider_combo, str(tiku.get("decision_provider", "SiliconFlow") or "SiliconFlow"))
         self.check_connection_check.setChecked(bool(tiku.get("check_llm_connection", True)))
         self.submit_check.setChecked(bool(tiku.get("submit", False)))
-        self.cover_rate_spin.setValue(float(tiku.get("cover_rate", 0.9) or 0.9))
-        self.delay_spin.setValue(float(tiku.get("delay", 1.0) or 1.0))
+        self.cover_rate_spin.setValue(config_float(tiku.get("cover_rate", 0.9), 0.9))
+        self.delay_spin.setValue(config_float(tiku.get("delay", 1.0), 1.0))
         self.tokens_edit.setText(str(effective_tiku.get("tokens", "") or ""))
         self.ai_endpoint_edit.setText(str(effective_tiku.get("endpoint", "") or ""))
         self.ai_key_edit.setText(str(effective_tiku.get("key", "") or ""))
         self.ai_model_edit.setText(str(effective_tiku.get("model", "") or ""))
         self.http_proxy_edit.setText(str(effective_tiku.get("http_proxy", "") or ""))
-        self.min_interval_spin.setValue(int(effective_tiku.get("min_interval_seconds", 3) or 3))
+        self.min_interval_spin.setValue(config_int(effective_tiku.get("min_interval_seconds", 3), 3))
         self.silicon_key_edit.setText(str(effective_tiku.get("siliconflow_key", "") or ""))
         self.silicon_model_edit.setText(str(effective_tiku.get("siliconflow_model", "") or ""))
         self.silicon_endpoint_edit.setText(str(effective_tiku.get("siliconflow_endpoint", "") or ""))
         self.like_model_edit.setText(str(effective_tiku.get("likeapi_model", "") or ""))
-        self.like_retry_times_spin.setValue(int(effective_tiku.get("likeapi_retry_times", 3) or 3))
+        self.like_retry_times_spin.setValue(config_int(effective_tiku.get("likeapi_retry_times", 3), 3))
         self.like_search_check.setChecked(parse_bool(effective_tiku.get("likeapi_search", False), False))
         self.like_vision_check.setChecked(parse_bool(effective_tiku.get("likeapi_vision", True), True))
         self.like_retry_check.setChecked(parse_bool(effective_tiku.get("likeapi_retry", True), True))
@@ -1615,7 +1631,7 @@ class ProfileEditorPanel(QWidget):
         self.notification_chat_id_edit.setText(str(effective_notification.get("tg_chat_id", "") or ""))
         set_notification_target(self.notification_target_combo, str(effective_notification.get("onebot_target_type", "private") or "private"))
         self.onebot_host_edit.setText(str(effective_notification.get("onebot_host", "127.0.0.1") or "127.0.0.1"))
-        self.onebot_port_spin.setValue(int(effective_notification.get("onebot_port", 3001) or 3001))
+        self.onebot_port_spin.setValue(config_int(effective_notification.get("onebot_port", 3001), 3001))
         self.onebot_path_edit.setText(str(effective_notification.get("onebot_path", "/") or "/"))
         self.onebot_access_token_edit.setText(str(effective_notification.get("onebot_access_token", "") or ""))
         self.onebot_user_id_edit.setText(str(effective_notification.get("onebot_user_id", "") or ""))
@@ -2528,12 +2544,12 @@ class GlobalSettingsPage(PageFrame):
         self.ai_key_edit.setText(str(tiku.get("key", "")))
         self.ai_model_edit.setText(str(tiku.get("model", "")))
         self.http_proxy_edit.setText(str(tiku.get("http_proxy", "")))
-        self.min_interval_spin.setValue(int(tiku.get("min_interval_seconds", 3) or 3))
+        self.min_interval_spin.setValue(config_int(tiku.get("min_interval_seconds", 3), 3))
         self.silicon_key_edit.setText(str(tiku.get("siliconflow_key", "")))
         self.silicon_model_edit.setText(str(tiku.get("siliconflow_model", "")))
         self.silicon_endpoint_edit.setText(str(tiku.get("siliconflow_endpoint", "")))
         self.like_model_edit.setText(str(tiku.get("likeapi_model", "")))
-        self.like_retry_times_spin.setValue(int(tiku.get("likeapi_retry_times", 3) or 3))
+        self.like_retry_times_spin.setValue(config_int(tiku.get("likeapi_retry_times", 3), 3))
         self.like_search_check.setChecked(str(tiku.get("likeapi_search", "false")).lower() == "true")
         self.like_vision_check.setChecked(str(tiku.get("likeapi_vision", "true")).lower() == "true")
         self.like_retry_check.setChecked(str(tiku.get("likeapi_retry", "true")).lower() == "true")
@@ -2545,7 +2561,7 @@ class GlobalSettingsPage(PageFrame):
         self.notification_chat_id_edit.setText(str(notification.get("tg_chat_id", "")))
         set_notification_target(self.notification_target_combo, str(notification.get("onebot_target_type", "private") or "private"))
         self.onebot_host_edit.setText(str(notification.get("onebot_host", "127.0.0.1")))
-        self.onebot_port_spin.setValue(int(notification.get("onebot_port", 3001) or 3001))
+        self.onebot_port_spin.setValue(config_int(notification.get("onebot_port", 3001), 3001))
         self.onebot_path_edit.setText(str(notification.get("onebot_path", "/") or "/"))
         self.onebot_access_token_edit.setText(str(notification.get("onebot_access_token", "")))
         self.onebot_user_id_edit.setText(str(notification.get("onebot_user_id", "")))
