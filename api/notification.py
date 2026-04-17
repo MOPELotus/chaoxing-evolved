@@ -22,6 +22,14 @@ try:
 except ImportError:  # pragma: no cover - 依赖缺失时走降级逻辑
     websockets = None
 
+try:
+    from websockets.asyncio.server import serve as websocket_serve
+except ImportError:  # pragma: no cover - 兼容旧版 websockets
+    try:
+        from websockets.server import serve as websocket_serve
+    except ImportError:  # pragma: no cover - 依赖缺失时走降级逻辑
+        websocket_serve = None
+
 
 def _to_bool(value: object, default: bool = False) -> bool:
     if value is None:
@@ -245,7 +253,7 @@ class OneBotReverseWebSocketBridge:
         self._startup_error: Exception | None = None
 
     def start(self) -> None:
-        if websockets is None:
+        if websockets is None or websocket_serve is None:
             raise RuntimeError("当前环境未安装 websockets，无法启用 OneBot v11 反向 WebSocket。")
 
         with self._thread_lock:
@@ -303,7 +311,7 @@ class OneBotReverseWebSocketBridge:
         self._loop.run_forever()
 
     async def _start_server_async(self):
-        return await websockets.serve(self._handle_connection, self.host, self.port)
+        return await websocket_serve(self._handle_connection, self.host, self.port)
 
     async def _handle_connection(self, websocket, path=None) -> None:
         requested_path = path or self._extract_path(websocket)
@@ -429,7 +437,7 @@ class OneBotV11(NotificationService):
         self.bridge: OneBotReverseWebSocketBridge | None = None
 
     def _init_service(self) -> None:
-        if websockets is None:
+        if websockets is None or websocket_serve is None:
             self.disabled = True
             logger.error("未安装 websockets，无法启用 OneBot v11 通知。")
             return

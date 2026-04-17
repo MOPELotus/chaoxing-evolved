@@ -10,4 +10,4 @@ def tqdm_sink(msg):
 
 logger.remove()
 logger.add(tqdm_sink, colorize=True, enqueue=True)
-logger.add("chaoxing.log", rotation="10 MB", level="TRACE")
+logger.add("chaoxing.log", rotation="10 MB", level="TRACE", encoding="utf8")

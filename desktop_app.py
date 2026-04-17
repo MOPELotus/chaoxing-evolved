@@ -8,6 +8,17 @@ import sys
 from desktop.worker import is_worker_invocation, main as run_worker_main
 
 
+def _configure_stdio_utf8() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None or not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            continue
+
+
 def _run_desktop_ui() -> int:
     from PyQt5.QtCore import QCoreApplication, Qt
     from PyQt5.QtWidgets import QApplication
@@ -30,6 +41,7 @@ def _run_desktop_ui() -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _configure_stdio_utf8()
     args = list(sys.argv[1:] if argv is None else argv)
     if is_worker_invocation(args):
         return run_worker_main(args)

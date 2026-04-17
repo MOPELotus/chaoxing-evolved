@@ -143,6 +143,8 @@ class RunManager(QObject):
             log_path = _build_run_log_path(profile["name"], started_at, uuid.uuid4().hex[:8])
             env = os.environ.copy()
             env["DESKTOP_MANAGED_RUN"] = "1"
+            env["PYTHONUTF8"] = "1"
+            env["PYTHONIOENCODING"] = "utf-8"
 
             process = subprocess.Popen(
                 command,

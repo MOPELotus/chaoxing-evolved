@@ -31,6 +31,8 @@ try {
         --lto=no `
         --jobs=$jobs `
         --progress-bar=none `
+        --include-module=websockets.asyncio.server `
+        --include-module=websockets.server `
         --include-data-dir=resource=resource `
         --output-dir=$buildDir `
         --output-filename=ChaoxingDesktop.exe `
