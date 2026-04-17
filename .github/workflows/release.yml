@@ -74,17 +74,18 @@ jobs:
           $archivePath = Join-Path (Resolve-Path release) $archiveName
           Compress-Archive -Path (Join-Path $distDir.FullName '*') -DestinationPath $archivePath -Force
 
-          $notes = @"
-          本次版本由 GitHub Actions 手动触发编译生成。
-
-          - 目标平台：Windows x64
-          - 构建方式：Nuitka standalone
-          - 触发分支：${{ github.ref_name }}
-          - 提交哈希：${{ github.sha }}
-
-          最近提交：
-          $(git log --oneline -20)
-          "@
+          $recentCommits = ((git log --oneline -20) | Out-String).Trim()
+          $notes = @(
+            '本次版本由 GitHub Actions 手动触发编译生成。',
+            '',
+            '- 目标平台：Windows x64',
+            '- 构建方式：Nuitka standalone',
+            '- 触发分支：${{ github.ref_name }}',
+            '- 提交哈希：${{ github.sha }}',
+            '',
+            '最近提交：',
+            $recentCommits
+          ) -join "`r`n"
           Set-Content -Path release\RELEASE_NOTES.md -Value $notes -Encoding UTF8
 
       - name: Upload release bundle
