@@ -24,11 +24,36 @@ disable_warnings(exceptions.InsecureRequestWarning)
 
 __all__ = ["CacheDAO", "Tiku", "TikuYanxi", "TikuLike", "TikuAdapter", "AI", "SiliconFlow", "MultiTiku"]
 
+IMG_TAG_PATTERN = re.compile(r'<img\b[^>]*?\bsrc=["\']([^"\']+)["\'][^>]*>', re.IGNORECASE)
+HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
+
 
 def normalize_question_title(title: str) -> str:
     title = sub(r'^\d+', '', title)
     title = sub(r'（\d+\.\d+分）$', '', title)
     return title
+
+
+def extract_image_urls(text: str | None) -> list[str]:
+    if not text:
+        return []
+
+    image_urls: list[str] = []
+    for match in IMG_TAG_PATTERN.finditer(str(text)):
+        url = match.group(1).strip()
+        if url and url not in image_urls:
+            image_urls.append(url)
+    return image_urls
+
+
+def normalize_rich_text_for_prompt(text: str | None) -> str:
+    if not text:
+        return ""
+
+    normalized = IMG_TAG_PATTERN.sub(" [图片] ", str(text))
+    normalized = HTML_TAG_PATTERN.sub("", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized.strip()
 
 
 def normalize_prompt_options(options: str | list[str] | None) -> str:
@@ -39,11 +64,60 @@ def normalize_prompt_options(options: str | list[str] | None) -> str:
     else:
         raw_options = str(options).splitlines()
     cleaned_options = [
-        re.sub(r"^[A-Za-z][\s\.\)、:：]*", "", option).strip()
+        re.sub(
+            r"^[A-Za-z][\s\.\)、:：]*",
+            "",
+            normalize_rich_text_for_prompt(str(option)),
+        ).strip()
         for option in raw_options
         if str(option).strip()
     ]
     return "\n".join(cleaned_options)
+
+
+def build_multimodal_user_content(text: str, image_urls: list[str] | None = None) -> str | list[dict]:
+    cleaned_text = (text or "").strip()
+    unique_urls = [url for url in image_urls or [] if url]
+    if not unique_urls:
+        return cleaned_text
+
+    if cleaned_text:
+        cleaned_text = f"{cleaned_text}\n本题包含 {len(unique_urls)} 张图片，请结合图片内容作答。"
+    else:
+        cleaned_text = f"本题包含 {len(unique_urls)} 张图片，请结合图片内容作答。"
+
+    content: list[dict] = [{"type": "text", "text": cleaned_text}]
+    for image_url in unique_urls:
+        content.append({"type": "image_url", "image_url": {"url": image_url}})
+    return content
+
+
+def messages_have_images(messages: list[dict]) -> bool:
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list):
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "image_url":
+                    return True
+    return False
+
+
+def strip_images_from_messages(messages: list[dict]) -> list[dict]:
+    normalized_messages: list[dict] = []
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            normalized_messages.append(dict(message))
+            continue
+
+        text_parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text_parts.append(str(item.get("text", "")).strip())
+        normalized_message = dict(message)
+        normalized_message["content"] = "\n".join(part for part in text_parts if part).strip()
+        normalized_messages.append(normalized_message)
+    return normalized_messages
 
 
 def parse_provider_names(provider_value: Optional[str]) -> list[str]:
@@ -252,7 +326,18 @@ class Tiku:
         normalized_q_info = dict(q_info)
         logger.debug(f"原始标题：{normalized_q_info['title']}")
         normalized_q_info['title'] = normalize_question_title(normalized_q_info['title'])
+        normalized_q_info['title_text'] = normalize_rich_text_for_prompt(normalized_q_info['title'])
+        title_image_urls = extract_image_urls(normalized_q_info['title'])
+        option_source = normalized_q_info.get('options')
+        if isinstance(option_source, list):
+            option_source = "\n".join(str(item) for item in option_source)
+        option_image_urls = extract_image_urls(option_source)
+        normalized_q_info['image_urls'] = title_image_urls + [
+            url for url in option_image_urls if url not in title_image_urls
+        ]
         logger.debug(f"处理后标题：{normalized_q_info['title']}")
+        if normalized_q_info['image_urls']:
+            logger.debug(f"识别到题目图片：{', '.join(normalized_q_info['image_urls'])}")
         return normalized_q_info
 
     def _validate_answer(self, answer: str, q_info: dict) -> bool:
@@ -948,6 +1033,21 @@ class AI(Tiku):
             if completion.choices and completion.choices[0].message.content:
                 return completion.choices[0].message.content
         except Exception as e:
+            if messages_have_images(messages):
+                logger.warning(f"{self.name} 图文请求失败，回退为纯文本重试：{e}")
+                try:
+                    client = self._build_client()
+                    self._wait_for_rate_limit()
+                    completion = client.chat.completions.create(
+                        model=self.model,
+                        messages=strip_images_from_messages(messages),
+                        max_tokens=max_tokens,
+                    )
+                    self.last_request_time = time.time()
+                    if completion.choices and completion.choices[0].message.content:
+                        return completion.choices[0].message.content
+                except Exception as retry_error:
+                    logger.error(f"{self.name} 纯文本回退请求异常：{retry_error}")
             logger.error(f"{self.name} 请求异常：{e}")
         return None
 
@@ -963,28 +1063,33 @@ class AI(Tiku):
             return None
 
     def _build_question_messages(self, q_info: dict) -> list[dict]:
+        title_text = q_info.get('title_text') or normalize_rich_text_for_prompt(q_info.get('title'))
         options = normalize_prompt_options(q_info.get('options'))
         if q_info['type'] == "single":
             system_prompt = "本题为单选题，你只能选择一个选项，请根据题目和选项回答问题，以json格式输出正确的选项内容，示例回答：{\"Answer\": [\"答案\"]}。除此之外不要输出任何多余的内容，也不要使用MD语法。如果你使用了互联网搜索，也请不要返回搜索的结果和参考资料"
-            user_prompt = f"题目：{q_info['title']}\n选项：{options}"
+            user_prompt = f"题目：{title_text}\n选项：{options}"
         elif q_info['type'] == 'multiple':
             system_prompt = "本题为多选题，你必须选择两个或以上选项，请根据题目和选项回答问题，以json格式输出正确的选项内容，示例回答：{\"Answer\": [\"答案1\",\"答案2\",\"答案3\"]}。除此之外不要输出任何多余的内容，也不要使用MD语法。如果你使用了互联网搜索，也请不要返回搜索的结果和参考资料"
-            user_prompt = f"题目：{q_info['title']}\n选项：{options}"
+            user_prompt = f"题目：{title_text}\n选项：{options}"
         elif q_info['type'] == 'completion':
             system_prompt = "本题为填空题，你必须根据语境和相关知识填入合适的内容，请根据题目回答问题，以json格式输出正确的答案，示例回答：{\"Answer\": [\"答案\"]}。除此之外不要输出任何多余的内容，也不要使用MD语法。如果你使用了互联网搜索，也请不要返回搜索的结果和参考资料"
-            user_prompt = f"题目：{q_info['title']}"
+            user_prompt = f"题目：{title_text}"
         elif q_info['type'] == 'judgement':
             system_prompt = "本题为判断题，你只能回答正确或者错误，请根据题目回答问题，以json格式输出正确的答案，示例回答：{\"Answer\": [\"正确\"]}。除此之外不要输出任何多余的内容，也不要使用MD语法。如果你使用了互联网搜索，也请不要返回搜索的结果和参考资料"
-            user_prompt = f"题目：{q_info['title']}"
+            user_prompt = f"题目：{title_text}"
         else:
             system_prompt = "本题为简答题，你必须根据语境和相关知识填入合适的内容，请根据题目回答问题，以json格式输出正确的答案，示例回答：{\"Answer\": [\"这是我的答案\"]}。除此之外不要输出任何多余的内容，也不要使用MD语法。如果你使用了互联网搜索，也请不要返回搜索的结果和参考资料"
-            user_prompt = f"题目：{q_info['title']}"
+            user_prompt = f"题目：{title_text}"
         return [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
+            {
+                "role": "user",
+                "content": build_multimodal_user_content(user_prompt, q_info.get("image_urls")),
+            },
         ]
 
     def _build_conflict_messages(self, q_info: dict, candidate_answers: list[tuple[str, str]]) -> list[dict]:
+        title_text = q_info.get("title_text") or normalize_rich_text_for_prompt(q_info.get("title"))
         options = normalize_prompt_options(q_info.get("options"))
         candidates_text = "\n".join(
             f"{index}. {provider_name}: {answer}"
@@ -997,13 +1102,16 @@ class AI(Tiku):
         )
         user_prompt = (
             f"题目类型：{q_info['type']}\n"
-            f"题目：{q_info['title']}\n"
+            f"题目：{title_text}\n"
             f"选项：{options}\n"
             f"候选答案：\n{candidates_text}"
         )
         return [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
+            {
+                "role": "user",
+                "content": build_multimodal_user_content(user_prompt, q_info.get("image_urls")),
+            },
         ]
 
     def _query(self, q_info: dict):
@@ -1085,32 +1193,45 @@ class SiliconFlow(Tiku):
             time.sleep(self.min_interval - interval)
 
     def _request_completion(self, messages: list[dict], max_tokens: int = 4096) -> Optional[str]:
-        payload = {
-            "model": self.model_name,
-            "messages": messages,
-            "stream": False,
-            "max_tokens": max_tokens,
-            "temperature": 0.7,
-            "top_p": 0.7,
-            "response_format": {"type": "text"},
-        }
+        for attempt_messages, label in (
+            (messages, "图文请求"),
+            (strip_images_from_messages(messages), "纯文本回退"),
+        ):
+            if label == "纯文本回退" and not messages_have_images(messages):
+                break
 
-        self._wait_for_rate_limit()
-        try:
-            response = requests.post(
-                self.api_endpoint,
-                headers=self._build_headers(),
-                json=payload,
-                timeout=30,
-            )
-            self.last_request_time = time.time()
-            if response.status_code == 200:
-                result = response.json()
-                return result['choices'][0]['message']['content']
+            payload = {
+                "model": self.model_name,
+                "messages": attempt_messages,
+                "stream": False,
+                "max_tokens": max_tokens,
+                "temperature": 0.7,
+                "top_p": 0.7,
+                "response_format": {"type": "text"},
+            }
 
-            logger.error(f"API请求失败：{response.status_code} {response.text}")
-        except Exception as e:
-            logger.error(f"硅基流动API异常：{e}")
+            self._wait_for_rate_limit()
+            try:
+                response = requests.post(
+                    self.api_endpoint,
+                    headers=self._build_headers(),
+                    json=payload,
+                    timeout=30,
+                )
+                self.last_request_time = time.time()
+                if response.status_code == 200:
+                    result = response.json()
+                    return result['choices'][0]['message']['content']
+
+                if label == "图文请求" and messages_have_images(messages):
+                    logger.warning(f"{self.name} 图文请求失败，准备回退为纯文本：{response.status_code} {response.text}")
+                    continue
+                logger.error(f"API请求失败：{response.status_code} {response.text}")
+            except Exception as e:
+                if label == "图文请求" and messages_have_images(messages):
+                    logger.warning(f"{self.name} 图文请求异常，准备回退为纯文本：{e}")
+                    continue
+                logger.error(f"硅基流动API异常：{e}")
         return None
 
     def _parse_answer_response(self, content: Optional[str]) -> Optional[str]:
@@ -1125,6 +1246,8 @@ class SiliconFlow(Tiku):
             return None
 
     def _build_question_messages(self, q_info: dict) -> list[dict]:
+        title_text = q_info.get("title_text") or normalize_rich_text_for_prompt(q_info.get("title"))
+        options_text = normalize_prompt_options(q_info.get('options'))
         if q_info['type'] == "single":
             system_prompt = "本题为单选题，请根据题目和选项选择唯一正确答案，输出的是选项的具体内容，而不是内容前的ABCD，并以JSON格式输出：示例回答：{\"Answer\": [\"正确选项内容\"]}。除此之外不要输出任何多余的内容，也不要使用MD语法。如果你使用了互联网搜索，也请不要返回搜索的结果和参考资料"
         elif q_info['type'] == 'multiple':
@@ -1139,11 +1262,15 @@ class SiliconFlow(Tiku):
             {"role": "system", "content": system_prompt},
             {
                 "role": "user",
-                "content": f"题目：{q_info['title']}\n选项：{normalize_prompt_options(q_info.get('options'))}",
+                "content": build_multimodal_user_content(
+                    f"题目：{title_text}\n选项：{options_text}",
+                    q_info.get("image_urls"),
+                ),
             },
         ]
 
     def _build_conflict_messages(self, q_info: dict, candidate_answers: list[tuple[str, str]]) -> list[dict]:
+        title_text = q_info.get("title_text") or normalize_rich_text_for_prompt(q_info.get("title"))
         candidates_text = "\n".join(
             f"{index}. {provider_name}: {answer}"
             for index, (provider_name, answer) in enumerate(candidate_answers, start=1)
@@ -1155,13 +1282,16 @@ class SiliconFlow(Tiku):
         )
         user_prompt = (
             f"题目类型：{q_info['type']}\n"
-            f"题目：{q_info['title']}\n"
+            f"题目：{title_text}\n"
             f"选项：{normalize_prompt_options(q_info.get('options'))}\n"
             f"候选答案：\n{candidates_text}"
         )
         return [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
+            {
+                "role": "user",
+                "content": build_multimodal_user_content(user_prompt, q_info.get("image_urls")),
+            },
         ]
 
     def _query(self, q_info: dict):
