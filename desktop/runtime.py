@@ -92,6 +92,7 @@ class DesktopRunState:
 class RunManager(QObject):
     runs_changed = pyqtSignal()
     log_received = pyqtSignal(str, str)
+    run_finished = pyqtSignal(str, str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -202,6 +203,7 @@ class RunManager(QObject):
             )
         self.runs_changed.emit()
         if notify_run:
+            self.run_finished.emit(notify_run.profile_name, notify_run.status)
             self._dispatch_notification(notify_run, notify_run.status)
 
     def stop_profile(self, profile_name: str) -> None:

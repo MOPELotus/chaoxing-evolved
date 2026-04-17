@@ -8,6 +8,7 @@ from copy import deepcopy
 from pathlib import Path
 
 from PyQt5.QtCore import QSize, QThread, Qt, pyqtSignal
+from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import (
     QApplication,
     QFrame,
@@ -16,6 +17,8 @@ from PyQt5.QtWidgets import (
     QListWidgetItem,
     QScrollArea,
     QSplitter,
+    QStyle,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
@@ -104,6 +107,14 @@ def join_csv(values: list[str]) -> str:
     return ",".join(str(item).strip() for item in values if str(item).strip())
 
 
+def parse_bool(value: object, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def set_combo_text(combo: ComboBox, value: str, fallback_index: int = 0) -> None:
     index = combo.findText(value)
     combo.setCurrentIndex(index if index >= 0 else fallback_index)
@@ -129,14 +140,21 @@ def exec_dialog(dialog) -> int:
     return dialog.exec() if hasattr(dialog, "exec") else dialog.exec_()
 
 
-def show_bar(parent: QWidget, level: str, title: str, content: str, duration: int = 3500) -> None:
+def show_bar(
+    parent: QWidget,
+    level: str,
+    title: str,
+    content: str,
+    duration: int = 3500,
+    position=InfoBarPosition.TOP_RIGHT,
+) -> None:
     fn = getattr(InfoBar, level, InfoBar.info)
     fn(
         title=title,
         content=content,
         orient=Qt.Horizontal,
         isClosable=True,
-        position=InfoBarPosition.TOP_RIGHT,
+        position=position,
         duration=duration,
         parent=parent.window() if parent else None,
     )
@@ -2141,6 +2159,7 @@ class GlobalSettingsPage(PageFrame):
 
         self._build_tiku_defaults_card()
         self._build_notification_defaults_card()
+        self._build_desktop_notice_card()
         self.scroll_layout.addStretch(1)
 
         self.reload_button.clicked.connect(self.load_settings)
@@ -2249,8 +2268,29 @@ class GlobalSettingsPage(PageFrame):
         self.notification_card.body_layout.addLayout(grid)
         self.scroll_layout.addWidget(self.notification_card)
 
+    def _build_desktop_notice_card(self) -> None:
+        self.desktop_notice_card = SectionCard("桌面提醒", "用于控制运行结束后的系统通知和应用内提示。", self.scroll.widget())
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(12)
+
+        self.system_notifications_check = CheckBox("启用系统通知", self.desktop_notice_card)
+        self.in_app_notifications_check = CheckBox("启用应用内提示", self.desktop_notice_card)
+        self.desktop_notify_completed_check = CheckBox("任务成功时提醒", self.desktop_notice_card)
+        self.desktop_notify_failed_check = CheckBox("任务异常时提醒", self.desktop_notice_card)
+        self.desktop_notify_stopped_check = CheckBox("任务停止时提醒", self.desktop_notice_card)
+
+        grid.addWidget(self.system_notifications_check, 0, 0)
+        grid.addWidget(self.in_app_notifications_check, 0, 1)
+        grid.addWidget(self.desktop_notify_completed_check, 1, 0)
+        grid.addWidget(self.desktop_notify_failed_check, 1, 1)
+        grid.addWidget(self.desktop_notify_stopped_check, 2, 0)
+        self.desktop_notice_card.body_layout.addLayout(grid)
+        self.scroll_layout.addWidget(self.desktop_notice_card)
+
     def load_settings(self) -> None:
         settings = load_global_settings()
+        desktop = settings.get("desktop", {})
         defaults = settings.get("defaults", {})
         tiku = defaults.get("tiku", {})
         notification = defaults.get("notification", {})
@@ -2289,8 +2329,23 @@ class GlobalSettingsPage(PageFrame):
         self.attach_log_file_check.setChecked(str(notification.get("attach_log_file", "true")).lower() == "true")
         self.include_log_excerpt_check.setChecked(str(notification.get("include_log_excerpt", "true")).lower() == "true")
 
+        self.system_notifications_check.setChecked(parse_bool(desktop.get("system_notifications", True), True))
+        self.in_app_notifications_check.setChecked(parse_bool(desktop.get("in_app_notifications", True), True))
+        self.desktop_notify_completed_check.setChecked(parse_bool(desktop.get("notify_on_completed", True), True))
+        self.desktop_notify_failed_check.setChecked(parse_bool(desktop.get("notify_on_failed", True), True))
+        self.desktop_notify_stopped_check.setChecked(parse_bool(desktop.get("notify_on_stopped", True), True))
+
     def save_settings(self) -> None:
         settings = deepcopy(DEFAULT_GLOBAL_SETTINGS)
+        settings["desktop"].update(
+            {
+                "system_notifications": self.system_notifications_check.isChecked(),
+                "in_app_notifications": self.in_app_notifications_check.isChecked(),
+                "notify_on_completed": self.desktop_notify_completed_check.isChecked(),
+                "notify_on_failed": self.desktop_notify_failed_check.isChecked(),
+                "notify_on_stopped": self.desktop_notify_stopped_check.isChecked(),
+            }
+        )
         settings["defaults"]["tiku"].update(
             {
                 "tokens": self.tokens_edit.text().strip(),
@@ -2424,6 +2479,8 @@ class DesktopMainWindow(MSFluentWindow):
 
         ensure_desktop_state()
         self.run_manager = RunManager(self)
+        self.run_manager.run_finished.connect(self.handle_run_finished)
+        self.tray_icon = self._build_tray_icon()
 
         self.home_page = HomePage(self.run_manager, self)
         self.profiles_page = ProfilesPage(self.run_manager, self.refresh_profile_dependent_pages, self)
@@ -2442,6 +2499,78 @@ class DesktopMainWindow(MSFluentWindow):
 
     def refresh_profile_dependent_pages(self) -> None:
         self.home_page.refresh_dashboard()
+
+    def _build_tray_icon(self) -> QSystemTrayIcon | None:
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return None
+
+        icon = self.windowIcon()
+        if icon.isNull():
+            icon = QApplication.style().standardIcon(QStyle.SP_ComputerIcon)
+            self.setWindowIcon(icon)
+
+        tray_icon = QSystemTrayIcon(icon, self)
+        tray_icon.setToolTip(APP_TITLE)
+        tray_icon.show()
+        return tray_icon
+
+    def _desktop_notice_settings(self) -> dict:
+        return load_global_settings().get("desktop", {})
+
+    def _desktop_event_enabled(self, status: str, settings: dict) -> bool:
+        mapping = {
+            "completed": "notify_on_completed",
+            "failed": "notify_on_failed",
+            "stopped": "notify_on_stopped",
+        }
+        key = mapping.get(status)
+        if not key:
+            return False
+        return parse_bool(settings.get(key, True), True)
+
+    def handle_run_finished(self, profile_name: str, status: str) -> None:
+        settings = self._desktop_notice_settings()
+        if not self._desktop_event_enabled(status, settings):
+            return
+
+        title_map = {
+            "completed": "任务已完成",
+            "failed": "任务运行异常",
+            "stopped": "任务已停止",
+        }
+        level_map = {
+            "completed": "success",
+            "failed": "error",
+            "stopped": "warning",
+        }
+        tray_icon_map = {
+            "completed": QSystemTrayIcon.Information,
+            "failed": QSystemTrayIcon.Critical,
+            "stopped": QSystemTrayIcon.Warning,
+        }
+
+        run = self.run_manager.get_run(profile_name)
+        detail = f"档案 {profile_name}"
+        if run and run.log_path:
+            detail += f"\n日志：{run.log_path}"
+
+        if parse_bool(settings.get("in_app_notifications", True), True):
+            show_bar(
+                self,
+                level_map.get(status, "info"),
+                title_map.get(status, "任务状态已更新"),
+                detail,
+                duration=5000,
+                position=InfoBarPosition.BOTTOM_RIGHT,
+            )
+
+        if self.tray_icon and parse_bool(settings.get("system_notifications", True), True):
+            self.tray_icon.showMessage(
+                title_map.get(status, "任务状态已更新"),
+                detail.replace("\n", " "),
+                tray_icon_map.get(status, QSystemTrayIcon.Information),
+                5000,
+            )
 
 
 def run_desktop_app() -> int:

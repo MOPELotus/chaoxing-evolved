@@ -17,6 +17,13 @@ DEFAULT_GLOBAL_SETTINGS = {
     "theme": {
         "accent": "snow",
     },
+    "desktop": {
+        "system_notifications": True,
+        "in_app_notifications": True,
+        "notify_on_completed": True,
+        "notify_on_failed": True,
+        "notify_on_stopped": True,
+    },
     "defaults": {
         "tiku": {
             "tokens": "",
