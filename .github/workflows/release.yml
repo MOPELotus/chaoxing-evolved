@@ -46,7 +46,7 @@ jobs:
           python -m pip install nuitka ordered-set zstandard
 
       - name: Build desktop application with Nuitka
-        shell: powershell
+        shell: pwsh
         run: |
           python -m nuitka `
             --standalone `
@@ -54,39 +54,20 @@ jobs:
             --enable-plugin=pyqt5 `
             --windows-console-mode=disable `
             --show-progress `
-            --include-package=api `
-            --include-package=desktop `
             --include-data-dir=resource=resource `
             --output-dir=build `
             --output-filename=ChaoxingDesktop.exe `
             desktop_app.py
 
       - name: Prepare release assets
-        shell: powershell
+        shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path release | Out-Null
-          $distDir = Get-ChildItem -Path build -Directory | Where-Object { $_.Name -like '*.dist' } | Select-Object -First 1
-          if (-not $distDir) {
-            throw '未找到 Nuitka 构建输出目录。'
-          }
-
-          $archiveName = "chaoxing-evolved-windows-x64-${{ inputs.tag_name }}.zip"
-          $archivePath = Join-Path (Resolve-Path release) $archiveName
-          Compress-Archive -Path (Join-Path $distDir.FullName '*') -DestinationPath $archivePath -Force
-
-          $recentCommits = ((git log --oneline -20) | Out-String).Trim()
-          $notes = @(
-            '本次版本由 GitHub Actions 手动触发编译生成。',
-            '',
-            '- 目标平台：Windows x64',
-            '- 构建方式：Nuitka standalone',
-            '- 触发分支：${{ github.ref_name }}',
-            '- 提交哈希：${{ github.sha }}',
-            '',
-            '最近提交：',
-            $recentCommits
-          ) -join "`r`n"
-          Set-Content -Path release\RELEASE_NOTES.md -Value $notes -Encoding UTF8
+          python scripts/prepare_release.py `
+            --build-dir build `
+            --release-dir release `
+            --tag "${{ inputs.tag_name }}" `
+            --ref-name "${{ github.ref_name }}" `
+            --sha "${{ github.sha }}"
 
       - name: Upload release bundle
         uses: actions/upload-artifact@v4
