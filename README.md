@@ -20,7 +20,7 @@
 ## 运行环境
 
 - Python `3.13+`
-- Windows 桌面环境
+- Windows 桌面环境（支持 `x64` 与 `ARM64` 源码运行）
 
 ## 安装方式
 
@@ -94,8 +94,20 @@ desktop_state/
 
 1. 打开仓库 `Actions`
 2. 选择 `Release`
-3. 手动填写 `tag_name`、`release_name` 与 `prerelease`
-4. 工作流将在 `Windows` 环境下完成桌面端编译、压缩产物并自动发布到 GitHub Release
+3. 手动填写 `tag_name`、`release_name`、`prerelease` 与 `windows_arch`
+4. `windows_arch` 支持 `arm64`、`x64` 与 `both`
+5. 工作流会在对应架构的 Windows GitHub-hosted runner 上完成桌面端编译、压缩产物并自动发布到 GitHub Release
+
+如需本地构建，可执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_release_local.ps1 -Tag vtest -Architecture x64
+```
+
+说明如下：
+
+- 本地构建必须使用与目标架构一致的 Python 环境
+- `ARM64` 本地构建建议直接在 `Windows ARM64` 设备上执行
 
 ## 与上游的关系
 
