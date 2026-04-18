@@ -25,6 +25,7 @@ try {
     python -m nuitka `
         --standalone `
         --assume-yes-for-downloads `
+        --experimental=force-dependencies-pefile `
         --enable-plugin=pyqt5 `
         --plugin-no-detection `
         --windows-console-mode=disable `
