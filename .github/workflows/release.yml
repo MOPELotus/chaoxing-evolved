@@ -125,6 +125,9 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install --prefer-binary -r requirements.txt nuitka=="${NUITKA_VERSION}" ordered-set zstandard
 
+      - name: Verify tkinter availability
+        run: python -c "import tkinter; print(tkinter.TkVersion)"
+
       - name: Install Linux packaging dependencies
         if: ${{ matrix.os_family == 'linux' }}
         shell: bash

@@ -94,7 +94,7 @@ if [[ "$TARGET_OS" == "macos" ]]; then
     python -m nuitka \
         --standalone \
         --assume-yes-for-downloads \
-        --enable-plugin=pyqt6 \
+        --enable-plugin=tk-inter \
         --plugin-no-detection \
         --macos-create-app-bundle \
         --lto=no \
@@ -125,7 +125,7 @@ else
     python -m nuitka \
         --standalone \
         --assume-yes-for-downloads \
-        --enable-plugin=pyqt6 \
+        --enable-plugin=tk-inter \
         --plugin-no-detection \
         --lto=no \
         --jobs="$JOBS" \

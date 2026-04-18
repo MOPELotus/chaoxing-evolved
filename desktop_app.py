@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import contextlib
-import io
-import os
 import sys
 
 from desktop.worker import is_worker_invocation, main as run_worker_main
@@ -20,20 +17,9 @@ def _configure_stdio_utf8() -> None:
 
 
 def _run_desktop_ui() -> int:
-    from PyQt6.QtCore import Qt
-    from PyQt6.QtWidgets import QApplication
+    from lightweight.ui import run_app
 
-    os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
-    os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "1")
-    os.environ.setdefault("QT_SCALE_FACTOR_ROUNDING_POLICY", "PassThrough")
-
-    if hasattr(QApplication, "setHighDpiScaleFactorRoundingPolicy") and hasattr(Qt, "HighDpiScaleFactorRoundingPolicy"):
-        QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
-
-    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        from desktop.ui import run_desktop_app
-
-    return run_desktop_app()
+    return run_app()
 
 
 def main(argv: list[str] | None = None) -> int:

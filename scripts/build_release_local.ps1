@@ -102,7 +102,7 @@ try {
         "@echo off",
         "call `"$vsDevCmd`" -no_logo -arch=$vsArchitecture -host_arch=$vsArchitecture",
         "if errorlevel 1 exit /b %errorlevel%",
-        "python -m nuitka --standalone --assume-yes-for-downloads --experimental=force-dependencies-pefile --enable-plugin=pyqt6 --plugin-no-detection --windows-console-mode=disable --lto=no --jobs=$jobs --progress-bar=none --include-module=websockets.asyncio.server --include-module=websockets.server --include-data-dir=resource=resource --output-dir=""$buildDir"" --output-filename=ChaoxingDesktop.exe desktop_app.py",
+        "python -m nuitka --standalone --assume-yes-for-downloads --experimental=force-dependencies-pefile --enable-plugin=tk-inter --plugin-no-detection --windows-console-mode=disable --lto=no --jobs=$jobs --progress-bar=none --include-module=websockets.asyncio.server --include-module=websockets.server --include-data-dir=resource=resource --output-dir=""$buildDir"" --output-filename=ChaoxingDesktop.exe desktop_app.py",
         "if errorlevel 1 exit /b %errorlevel%"
     )
 

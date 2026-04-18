@@ -11,8 +11,6 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from PyQt6.QtCore import QObject, pyqtSignal
-
 from api.base import Account, Chaoxing
 from api.json_store import (
     build_config_sections,
@@ -28,7 +26,7 @@ from desktop.worker import WORKER_FLAG
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DESKTOP_APP_ENTRY = PROJECT_ROOT / "desktop_app.py"
+APP_ENTRY = PROJECT_ROOT / "desktop_app.py"
 ANSI_PATTERN = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 PROFILE_IO_LOCK = threading.RLock()
 RUN_LOG_DIR = PROJECT_ROOT / "desktop_state" / "logs"
@@ -75,7 +73,7 @@ def _build_run_log_path(profile_name: str, started_at: float, run_id: str) -> Pa
     return profile_dir / f"{date_prefix}-{run_id}.log"
 
 
-def _is_compiled_desktop_app() -> bool:
+def _is_compiled_app() -> bool:
     if getattr(sys, "frozen", False):
         return True
     if "__compiled__" in globals():
@@ -88,7 +86,7 @@ def _is_compiled_desktop_app() -> bool:
 
 
 @dataclass
-class DesktopRunState:
+class RunState:
     id: str
     profile_name: str
     profile_path: Path
@@ -103,30 +101,25 @@ class DesktopRunState:
     process: subprocess.Popen | None = field(default=None, repr=False)
 
 
-class RunManager(QObject):
-    runs_changed = pyqtSignal()
-    log_received = pyqtSignal(str, str)
-    run_finished = pyqtSignal(str, str)
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self._runs: dict[str, DesktopRunState] = {}
+class RunManager:
+    def __init__(self) -> None:
+        self._runs: dict[str, RunState] = {}
         self._lock = threading.RLock()
 
     def _build_command(self, profile_name: str) -> list[str]:
-        if _is_compiled_desktop_app():
+        if _is_compiled_app():
             return [sys.executable, WORKER_FLAG, profile_name]
-        return [sys.executable, str(DESKTOP_APP_ENTRY), WORKER_FLAG, profile_name]
+        return [sys.executable, str(APP_ENTRY), WORKER_FLAG, profile_name]
 
-    def list_runs(self) -> list[DesktopRunState]:
+    def list_runs(self) -> list[RunState]:
         with self._lock:
             return sorted(self._runs.values(), key=lambda item: item.started_at, reverse=True)
 
-    def get_run(self, profile_name: str) -> DesktopRunState | None:
+    def get_run(self, profile_name: str) -> RunState | None:
         with self._lock:
             return self._runs.get(profile_name)
 
-    def start_profile(self, profile_name: str) -> DesktopRunState:
+    def start_profile(self, profile_name: str) -> RunState:
         with self._lock:
             current_run = self._runs.get(profile_name)
             if current_run and current_run.status == "running":
@@ -138,6 +131,7 @@ class RunManager(QObject):
             profile_path = profile_json_path(profile["name"])
             if not profile_path.exists():
                 raise FileNotFoundError(f"{profile_name} 的配置文件不存在")
+
             command = self._build_command(profile["name"])
             started_at = time.time()
             log_path = _build_run_log_path(profile["name"], started_at, uuid.uuid4().hex[:8])
@@ -157,7 +151,8 @@ class RunManager(QObject):
                 bufsize=1,
                 env=env,
             )
-            run_state = DesktopRunState(
+
+            run_state = RunState(
                 id=uuid.uuid4().hex[:8],
                 profile_name=profile["name"],
                 profile_path=profile_path,
@@ -177,10 +172,9 @@ class RunManager(QObject):
             target=self._pump_output,
             args=(profile["name"],),
             daemon=True,
-            name=f"DesktopRun-{profile['name']}",
+            name=f"LiteRun-{profile['name']}",
         )
         reader.start()
-        self.runs_changed.emit()
         self._dispatch_notification(run_state, "started")
         return run_state
 
@@ -193,6 +187,7 @@ class RunManager(QObject):
             clean_line = strip_ansi(line.rstrip())
             if not clean_line:
                 continue
+
             with self._lock:
                 current = self._runs.get(profile_name)
                 if not current:
@@ -201,10 +196,9 @@ class RunManager(QObject):
                 if len(current.logs) > 2000:
                     current.logs = current.logs[-2000:]
                 self._write_log_line(current, clean_line)
-            self.log_received.emit(profile_name, clean_line)
 
         run_state.process.wait()
-        notify_run: DesktopRunState | None = None
+        notify_run: RunState | None = None
         with self._lock:
             current = self._runs.get(profile_name)
             if not current:
@@ -219,9 +213,8 @@ class RunManager(QObject):
                 current,
                 f"[系统] {_format_time(current.ended_at)} 任务结束，状态: {current.status}，退出码: {current.exit_code}",
             )
-        self.runs_changed.emit()
+
         if notify_run:
-            self.run_finished.emit(notify_run.profile_name, notify_run.status)
             self._dispatch_notification(notify_run, notify_run.status)
 
     def stop_profile(self, profile_name: str) -> None:
@@ -244,7 +237,6 @@ class RunManager(QObject):
                 run_state,
                 f"[系统] {_format_time(run_state.ended_at)} 任务已停止，退出码: {run_state.exit_code}",
             )
-        self.runs_changed.emit()
 
     def logs_for_profile(self, profile_name: str) -> str:
         run_state = self.get_run(profile_name)
@@ -259,28 +251,22 @@ class RunManager(QObject):
                 raise ValueError(f"{profile_name} 仍在运行中")
             self.stop_profile(profile_name)
 
-        removed = False
         with self._lock:
-            if profile_name in self._runs:
-                self._runs.pop(profile_name, None)
-                removed = True
+            self._runs.pop(profile_name, None)
 
-        if removed:
-            self.runs_changed.emit()
-
-    def _write_log_line(self, run_state: DesktopRunState, line: str) -> None:
+    def _write_log_line(self, run_state: RunState, line: str) -> None:
         if not run_state.log_path:
             return
         run_state.log_path.parent.mkdir(parents=True, exist_ok=True)
         with run_state.log_path.open("a", encoding="utf8") as fp:
             fp.write(line.rstrip() + "\n")
 
-    def _dispatch_notification(self, run_state: DesktopRunState, event: str) -> None:
+    def _dispatch_notification(self, run_state: RunState, event: str) -> None:
         worker = threading.Thread(
             target=self._notify_run_event,
             args=(run_state, event),
             daemon=True,
-            name=f"Notify-{run_state.profile_name}-{event}",
+            name=f"LiteNotify-{run_state.profile_name}-{event}",
         )
         worker.start()
 
@@ -294,7 +280,7 @@ class RunManager(QObject):
         except Exception as exc:
             logger.error(f"通知服务初始化失败: {exc}")
 
-    def _notify_run_event(self, run_state: DesktopRunState, event: str) -> None:
+    def _notify_run_event(self, run_state: RunState, event: str) -> None:
         config = dict(run_state.notification_config or {})
         provider = str(config.get("provider", "") or "").strip()
         if not provider:
@@ -334,12 +320,7 @@ class RunManager(QObject):
         except Exception as exc:
             logger.error(f"{run_state.profile_name} 的运行通知发送失败: {exc}")
 
-    def _build_notification_message(
-        self,
-        run_state: DesktopRunState,
-        event: str,
-        supports_file_upload: bool,
-    ) -> str:
+    def _build_notification_message(self, run_state: RunState, event: str, supports_file_upload: bool) -> str:
         headline_map = {
             "started": "已开始运行",
             "completed": "运行成功",
@@ -373,7 +354,7 @@ class RunManager(QObject):
 
         return "\n".join(lines)
 
-    def _build_log_excerpt(self, run_state: DesktopRunState) -> str:
+    def _build_log_excerpt(self, run_state: RunState) -> str:
         lines = [line for line in run_state.logs[-20:] if line.strip()]
         if not lines:
             return ""

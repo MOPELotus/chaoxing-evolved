@@ -1,21 +1,22 @@
-# 超星助手桌面版
+# 超星助手轻量桌面版
 
-本仓库是基于 [Samueli924/chaoxing](https://github.com/Samueli924/chaoxing) 持续维护的桌面化分支，定位为面向多账号、多题库协同与桌面集中管理场景的 Windows 客户端版本。
+本仓库是基于 [Samueli924/chaoxing](https://github.com/Samueli924/chaoxing) 持续维护的轻量桌面分支，定位为面向多账号、多题库协同与桌面集中管理场景的低依赖客户端版本。
 
-当前版本已经完成从旧命令行交互与 Web 控制页到桌面端的收敛，前台统一采用 JSON 配置，运行链路直接对接桌面端控制中心，不再保留旧式 INI 桥接方案。
+当前分支前台采用 `tkinter + ttk` 实现，统一使用 JSON 配置，运行链路直接对接桌面端控制中心，不再保留旧式 INI 桥接方案。
 
 ## 功能概览
 
 - 多账号并行隔离：每个档案自动使用独立的 Cookies 与题库缓存
-- 桌面控制中心：基于 `PyQt6 + PyQt6-Fluent-Widgets`
+- 轻量桌面控制中心：基于 `tkinter + ttk`
 - JSON 配置体系：统一使用 `desktop_state/profiles/*.json`
 - 原生运行链路：桌面端直接读取 JSON 配置并启动任务
 - 全局设置：题库、AI、通知与桌面提醒的默认值集中维护
 - 多题库协同：支持 `MultiTiku`、一致性比对与仲裁题库
-- 课程选择：支持刷新课程列表后按块选择课程
+- 课程选择：支持刷新课程列表后选择课程
 - 批量操作：支持批量启动、批量停止、批量删除
 - 通知能力：支持 `OneBot v11` 反向 WebSocket，可推送到 QQ 私聊或群聊
-- 桌面提醒：支持系统通知与应用内右下角提示，可按事件类型开关
+- 高级 JSON：支持直接编辑档案 JSON 与全局设置 JSON
+- 低资源占用：不依赖 Qt、Fluent Widgets 或 GPU 加速
 
 ## 运行环境
 
@@ -39,13 +40,7 @@ pip install -r requirements.txt
 pip install .
 ```
 
-如需单独安装适配 `PyQt6` 的 Fluent 组件，可直接执行以下命令。
-
-To install lite version for PyQt6:
-
-```bash
-pip install PyQt6-Fluent-Widgets -i https://pypi.org/simple/
-```
+当前分支不需要额外安装 Qt 或 Fluent Widgets。
 
 ## 启动方式
 
@@ -55,9 +50,11 @@ python desktop_app.py
 
 ## 界面说明
 
-- `概览`：显示主页概况、关键指标、数据目录与按档案排列的实时日志卡片
-- `配置管理`：用于维护档案列表、批量操作、结构化表单与高级 JSON 编辑
+- `概览`：显示档案统计、当前选中档案摘要与常用操作
+- `档案设置`：用于维护档案列表、批量操作、结构化表单与课程刷新
 - `全局设置`：用于维护题库默认值、通知默认值与桌面提醒开关
+- `高级 JSON`：用于直接编辑当前档案 JSON
+- `运行日志`：用于查看各档案的运行状态与实时日志
 
 ## 数据目录
 
@@ -86,8 +83,8 @@ desktop_state/
 
 1. 在 `全局设置` 中填写题库、AI、通知与桌面提醒默认值
 2. 在 `配置管理` 中为每个账号创建独立档案
-3. 通过课程块选择课程，通过题库块选择协同题库
-4. 在 `概览` 页查看运行日志，并按需启动或停止任务
+3. 按需刷新课程列表，选择课程并配置协同题库
+4. 在 `运行日志` 页查看运行状态，并按需启动或停止任务
 
 ## Release 构建
 
@@ -127,11 +124,12 @@ bash scripts/build_release_unix.sh --tag vtest --os linux --arch x64 --output-di
 - `ARM64` 本地构建建议直接在 `Windows ARM64` 设备上执行
 - Linux 发布会额外生成 `AppImage`、`deb` 与 `rpm`
 - macOS 发布当前输出为压缩后的 `.app` 应用包
+- 本分支 Windows 本地构建会使用 `tk-inter` 插件打包 `tkinter`
 
 ## 与上游的关系
 
 - 上游项目以命令行刷课流程为主
-- 本分支重点维护桌面控制层、JSON 配置体系、多账号隔离、多题库协同与桌面通知体验
+- 本分支重点维护轻量桌面控制层、JSON 配置体系、多账号隔离、多题库协同与桌面通知体验
 
 ## 许可与声明
 
