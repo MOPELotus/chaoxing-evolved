@@ -11,7 +11,7 @@ dynamic = ["dependencies"]
 py-modules = ["desktop_app"]
 
 [tool.setuptools.packages.find]
-include = ["api*", "desktop*"]
+include = ["api*", "desktop*", "tui*"]
 
 [tool.setuptools.dynamic]
 dependencies = {file=["requirements.txt"]}

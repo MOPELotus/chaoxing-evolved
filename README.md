@@ -1,26 +1,26 @@
-# 超星助手桌面版
+# 超星助手 TUI 版
 
-本仓库是基于 [Samueli924/chaoxing](https://github.com/Samueli924/chaoxing) 持续维护的桌面化分支，定位为面向多账号、多题库协同与桌面集中管理场景的 Windows 客户端版本。
+本仓库是基于 [Samueli924/chaoxing](https://github.com/Samueli924/chaoxing) 持续维护的终端控制台分支，定位为面向多账号、多题库协同与轻量化运行场景的 PowerShell TUI 版本。
 
-当前版本已经完成从旧命令行交互与 Web 控制页到桌面端的收敛，前台统一采用 JSON 配置，运行链路直接对接桌面端控制中心，不再保留旧式 INI 桥接方案。
+当前版本以前台 JSON 配置为核心，运行链路直接对接后台宿主进程，并通过 PowerShell 全屏终端界面统一管理档案、任务与日志。
 
 ## 功能概览
 
 - 多账号并行隔离：每个档案自动使用独立的 Cookies 与题库缓存
-- 桌面控制中心：基于 `PyQt6 + PyQt6-Fluent-Widgets`
+- PowerShell TUI 控制台：以全屏终端界面集中管理档案、任务与日志
 - JSON 配置体系：统一使用 `desktop_state/profiles/*.json`
-- 原生运行链路：桌面端直接读取 JSON 配置并启动任务
-- 全局设置：题库、AI、通知与桌面提醒的默认值集中维护
+- 原生运行链路：后台宿主进程直接读取 JSON 配置并启动任务
+- 全局设置：题库、AI、通知默认值集中维护
 - 多题库协同：支持 `MultiTiku`、一致性比对与仲裁题库
-- 课程选择：支持刷新课程列表后按块选择课程
-- 批量操作：支持批量启动、批量停止、批量删除
+- 课程选择：支持刷新课程列表后按编号选择课程
+- 常用操作：支持创建、删除、启动、停止与查看日志
 - 通知能力：支持 `OneBot v11` 反向 WebSocket，可推送到 QQ 私聊或群聊
-- 桌面提醒：支持系统通知与应用内右下角提示，可按事件类型开关
 
 ## 运行环境
 
 - Python `3.13+`
-- 桌面环境：
+- PowerShell `7+`
+- 终端环境：
   - Windows `x64` / `ARM64`
   - Linux `x64` / `ARM64`
 
@@ -38,15 +38,15 @@ pip install -r requirements.txt
 pip install .
 ```
 
-如需单独安装适配 `PyQt6` 的 Fluent 组件，可直接执行以下命令。
+## 启动方式
 
-To install lite version for PyQt6:
+推荐直接执行：
 
-```bash
-pip install PyQt6-Fluent-Widgets -i https://pypi.org/simple/
+```powershell
+pwsh -NoLogo -File .\tui.ps1
 ```
 
-## 启动方式
+也可以继续使用统一入口：
 
 ```bash
 python desktop_app.py
@@ -54,9 +54,10 @@ python desktop_app.py
 
 ## 界面说明
 
-- `概览`：显示主页概况、关键指标、数据目录与按档案排列的实时日志卡片
-- `配置管理`：用于维护档案列表、批量操作、结构化表单与高级 JSON 编辑
-- `全局设置`：用于维护题库默认值、通知默认值与桌面提醒开关
+- `概览`：显示当前档案总览、运行状态与当前选中档案摘要
+- `档案`：显示选中档案的账号、题库、课程与任务配置
+- `日志`：显示选中档案最近一次运行的日志尾部
+- `全局`：显示当前生效的题库与通知默认值
 
 ## 数据目录
 
@@ -71,60 +72,47 @@ desktop_state/
   logs/
     user1/
       20260417-090000-ab12cd34.log
+  tui/
+    runs.json
 ```
 
 说明如下：
 
-- `profiles/*.json` 为桌面端主配置文件
+- `profiles/*.json` 为 TUI 主配置文件
 - `*.cookies.txt` 与 `*.cache.json` 会按档案名自动生成，用于隔离登录状态与题库缓存
-- `logs/` 用于保存每次运行的独立日志文件，便于通知推送与问题排查
+- `logs/` 用于保存每次运行的独立日志文件
+- `tui/runs.json` 用于保存 TUI 当前的后台任务状态
 
 ## 使用建议
 
 建议按以下顺序完成初始化：
 
-1. 在 `全局设置` 中填写题库、AI、通知与桌面提醒默认值
-2. 在 `配置管理` 中为每个账号创建独立档案
-3. 通过课程块选择课程，通过题库块选择协同题库
-4. 在 `概览` 页查看运行日志，并按需启动或停止任务
+1. 在 `全局` 页中填写题库、AI 与通知默认值
+2. 在档案列表中为每个账号创建独立档案
+3. 在档案编辑菜单中填写账号、题库与课程信息
+4. 在主界面查看运行状态，并按需启动或停止任务
 
 ## Release 构建
 
-仓库已提供基于 GitHub Actions 的手动发布工作流，可用于触发多平台并行构建，并在构建完成后统一创建 Release。
+仓库保留了 GitHub Actions 发布工作流，但当前 TUI 分支的主入口已经切换为 PowerShell 终端界面，后续发布策略会以该入口为准。
 
 典型流程如下：
 
 1. 打开仓库 `Actions`
 2. 选择 `Release`
 3. 手动填写 `tag_name`、`release_name` 与 `prerelease`
-4. 工作流会并行构建以下目标：
-   - Windows `x64`
-   - Windows `ARM64`
-   - Linux `x64`
-   - Linux `ARM64`
-5. 所有成功产物会在最后统一汇总，并自动发布到 GitHub Release
+4. 当前主线以源码运行方式为主，构建工作流后续会继续针对 TUI 入口调整
 
-如需本地构建，可执行：
+如需直接运行源码，当前推荐：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build_release_local.ps1 -Tag vtest -Architecture x64
+pwsh -NoLogo -File .\tui.ps1
 ```
-
-```bash
-bash scripts/build_release_unix.sh --tag vtest --os linux --arch x64 --output-dir build-linux-x64 --release-dir release
-```
-
-说明如下：
-
-- 本地构建必须使用与目标架构一致的 Python 环境
-- `ARM64` 本地构建建议直接在 `Windows ARM64` 设备上执行
-- Linux 发布会额外生成 `AppImage`、`deb` 与 `rpm`
-- 由于 Nuitka 当前对 `PyQt6 on macOS` 的支持受限，GitHub Release 工作流暂不发布 macOS 构建
 
 ## 与上游的关系
 
 - 上游项目以命令行刷课流程为主
-- 本分支重点维护桌面控制层、JSON 配置体系、多账号隔离、多题库协同与桌面通知体验
+- 本分支重点维护 PowerShell TUI 控制层、JSON 配置体系、多账号隔离与多题库协同体验
 
 ## 许可与声明
 
