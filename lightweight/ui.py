@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
 import json
+import platform
 import queue
+import subprocess
 import threading
 import time
 import tkinter as tk
@@ -111,6 +114,8 @@ class LightweightApp(tk.Tk):
         self.current_profile_name: str | None = None
         self.course_items: list[dict] = []
         self._last_log_payload = ""
+        self._known_run_statuses: dict[str, str] = {}
+        self._toast_windows: list[tk.Toplevel] = []
 
         self._build_variables()
         self._build_layout()
@@ -961,6 +966,136 @@ class LightweightApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror(APP_TITLE, f"保存全局设置失败：\n{exc}")
 
+    def _desktop_settings(self) -> dict[str, bool]:
+        return {
+            "system_notifications": self.system_notifications_var.get(),
+            "in_app_notifications": self.in_app_notifications_var.get(),
+            "notify_on_completed": self.desktop_notify_completed_var.get(),
+            "notify_on_failed": self.desktop_notify_failed_var.get(),
+            "notify_on_stopped": self.desktop_notify_stopped_var.get(),
+        }
+
+    def _maybe_notify_status_change(self, run) -> None:
+        previous_status = self._known_run_statuses.get(run.profile_name)
+        self._known_run_statuses[run.profile_name] = run.status
+        if previous_status == run.status:
+            return
+
+        desktop = self._desktop_settings()
+        enabled_map = {
+            "completed": desktop["notify_on_completed"],
+            "failed": desktop["notify_on_failed"],
+            "stopped": desktop["notify_on_stopped"],
+        }
+        if run.status not in enabled_map or not enabled_map[run.status]:
+            return
+
+        title_map = {
+            "completed": "任务完成",
+            "failed": "任务异常",
+            "stopped": "任务已停止",
+        }
+        title = f"{title_map.get(run.status, run.status)}"
+        message = f"档案：{run.profile_name}"
+        if desktop["in_app_notifications"]:
+            self._show_toast(title, message, run.status)
+        if desktop["system_notifications"]:
+            self._show_system_notification(title, message)
+
+    def _show_toast(self, title: str, message: str, status: str) -> None:
+        color_map = {
+            "completed": "#1f7a1f",
+            "failed": "#b42318",
+            "stopped": "#8a6d1d",
+        }
+        toast = tk.Toplevel(self)
+        toast.withdraw()
+        toast.overrideredirect(True)
+        toast.attributes("-topmost", True)
+        toast.configure(bg=color_map.get(status, "#1f1f1f"))
+
+        card = ttk.Frame(toast, padding=12)
+        card.pack(fill="both", expand=True)
+        ttk.Label(card, text=title, font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        ttk.Label(card, text=message).pack(anchor="w", pady=(4, 0))
+
+        toast.update_idletasks()
+        width = max(280, toast.winfo_reqwidth())
+        height = max(90, toast.winfo_reqheight())
+        screen_width = self.winfo_screenwidth()
+        screen_height = self.winfo_screenheight()
+        margin = 20
+        index = len(self._toast_windows)
+        x = screen_width - width - margin
+        y = screen_height - height - margin - index * (height + 10)
+        toast.geometry(f"{width}x{height}+{x}+{y}")
+        toast.deiconify()
+
+        self._toast_windows.append(toast)
+
+        def close_toast() -> None:
+            if toast in self._toast_windows:
+                self._toast_windows.remove(toast)
+            if toast.winfo_exists():
+                toast.destroy()
+            self._reflow_toasts()
+
+        toast.after(4500, close_toast)
+
+    def _reflow_toasts(self) -> None:
+        margin = 20
+        for index, toast in enumerate(list(self._toast_windows)):
+            if not toast.winfo_exists():
+                continue
+            toast.update_idletasks()
+            width = toast.winfo_width()
+            height = toast.winfo_height()
+            x = self.winfo_screenwidth() - width - margin
+            y = self.winfo_screenheight() - height - margin - index * (height + 10)
+            toast.geometry(f"{width}x{height}+{x}+{y}")
+
+    def _show_system_notification(self, title: str, message: str) -> None:
+        system = platform.system().lower()
+        try:
+            if system == "windows":
+                self._show_windows_notification(title, message)
+            elif system == "darwin":
+                safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
+                safe_message = message.replace("\\", "\\\\").replace('"', '\\"')
+                subprocess.Popen(
+                    ["osascript", "-e", f'display notification "{safe_message}" with title "{safe_title}"'],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            else:
+                subprocess.Popen(
+                    ["notify-send", title, message],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+        except Exception:
+            return
+
+    def _show_windows_notification(self, title: str, message: str) -> None:
+        script = f"""
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$notify = New-Object System.Windows.Forms.NotifyIcon
+$notify.Icon = [System.Drawing.SystemIcons]::Information
+$notify.Visible = $true
+$notify.BalloonTipTitle = '{title.replace("'", "''")}'
+$notify.BalloonTipText = '{message.replace("'", "''")}'
+$notify.ShowBalloonTip(5000)
+Start-Sleep -Seconds 6
+$notify.Dispose()
+"""
+        encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
+        subprocess.Popen(
+            ["powershell.exe", "-NoProfile", "-EncodedCommand", encoded],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
     def _refresh_overview(self) -> None:
         running = 0
         failed = 0
@@ -1007,6 +1142,7 @@ class LightweightApp(tk.Tk):
 
         self.run_tree.delete(*self.run_tree.get_children())
         for run in self.run_manager.list_runs():
+            self._maybe_notify_status_change(run)
             self.run_tree.insert(
                 "",
                 tk.END,
