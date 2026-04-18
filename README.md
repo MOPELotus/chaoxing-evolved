@@ -22,7 +22,6 @@
 - Python `3.13+`
 - 桌面环境：
   - Windows `x64` / `ARM64`
-  - macOS `Intel` / `Apple Silicon`
   - Linux `x64` / `ARM64`
 
 ## 安装方式
@@ -101,8 +100,6 @@ desktop_state/
 4. 工作流会并行构建以下目标：
    - Windows `x64`
    - Windows `ARM64`
-   - macOS `Intel`
-   - macOS `Apple Silicon`
    - Linux `x64`
    - Linux `ARM64`
 5. 所有成功产物会在最后统一汇总，并自动发布到 GitHub Release
@@ -114,10 +111,6 @@ powershell -ExecutionPolicy Bypass -File scripts\build_release_local.ps1 -Tag vt
 ```
 
 ```bash
-bash scripts/build_release_unix.sh --tag vtest --os macos --arch arm64 --output-dir build-macos-arm64 --release-dir release
-```
-
-```bash
 bash scripts/build_release_unix.sh --tag vtest --os linux --arch x64 --output-dir build-linux-x64 --release-dir release
 ```
 
@@ -126,7 +119,7 @@ bash scripts/build_release_unix.sh --tag vtest --os linux --arch x64 --output-di
 - 本地构建必须使用与目标架构一致的 Python 环境
 - `ARM64` 本地构建建议直接在 `Windows ARM64` 设备上执行
 - Linux 发布会额外生成 `AppImage`、`deb` 与 `rpm`
-- macOS 发布当前输出为压缩后的 `.app` 应用包
+- 由于 Nuitka 当前对 `PyQt6 on macOS` 的支持受限，GitHub Release 工作流暂不发布 macOS 构建
 
 ## 与上游的关系
 

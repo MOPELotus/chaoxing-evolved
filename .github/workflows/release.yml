@@ -50,20 +50,6 @@ jobs:
             python_arch: arm64
             build_arch: arm64
             runner_key: win11arm
-          - id: macos-intel
-            platform_label: macOS Intel
-            os_family: macos
-            runs_on: macos-15-intel
-            python_arch: x64
-            build_arch: x64
-            runner_key: macos15intel
-          - id: macos-arm64
-            platform_label: macOS Apple Silicon
-            os_family: macos
-            runs_on: macos-15
-            python_arch: arm64
-            build_arch: arm64
-            runner_key: macos15arm64
           - id: linux-x64
             platform_label: Linux x64
             os_family: linux
@@ -144,7 +130,7 @@ jobs:
             -OutputDir "build-${{ matrix.id }}" `
             -ReleaseDir "release"
 
-      - name: Build macOS and Linux release assets
+      - name: Build Linux release assets
         if: ${{ matrix.os_family != 'windows' }}
         shell: bash
         run: |

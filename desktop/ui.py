@@ -228,6 +228,40 @@ def get_notification_target(combo: ComboBox) -> str:
     return NOTIFICATION_TARGET_VALUE_BY_LABEL.get(combo.currentText().strip(), "private")
 
 
+PASSIVE_FOCUS_WIDGET_TYPES = (
+    CheckBox,
+    ComboBox,
+    ListWidget,
+    PillPushButton,
+    PrimaryPushButton,
+    PushButton,
+    TransparentPushButton,
+)
+
+
+def mute_focus(widget: QWidget | None) -> None:
+    if widget is None:
+        return
+    widget.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+    widget.setAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect, False)
+
+    view_getter = getattr(widget, "view", None)
+    if callable(view_getter):
+        with contextlib.suppress(Exception):
+            view = view_getter()
+            if isinstance(view, QWidget):
+                view.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+                view.setAttribute(Qt.WidgetAttribute.WA_MacShowFocusRect, False)
+
+
+def mute_focus_tree(root: QWidget | None) -> None:
+    if root is None:
+        return
+    for child in root.findChildren(QWidget):
+        if isinstance(child, PASSIVE_FOCUS_WIDGET_TYPES):
+            mute_focus(child)
+
+
 def exec_dialog(dialog) -> int:
     return dialog.exec()
 
@@ -524,6 +558,7 @@ class DashboardHeroCard(CardWidget):
 
         self.refresh_button.clicked.connect(self.refresh_requested.emit)
         self.manage_button.clicked.connect(self.manage_requested.emit)
+        mute_focus_tree(self)
 
     def set_status(self, title: str, body: str, note: str) -> None:
         self.status_title.setText(title)
@@ -577,6 +612,7 @@ class ChipPanel(QWidget):
             button.setChecked(value in selected_values)
             button.toggled.connect(self._emit_changed)
             self.flow_layout.addWidget(button)
+            mute_focus(button)
             self._buttons[value] = button
 
         has_items = bool(items)
@@ -637,6 +673,8 @@ class TextInputDialog(MessageBoxBase):
         self.yesButton.setText(confirm_text)
         self.cancelButton.setText("取消")
         self.input_edit.setFocus()
+        mute_focus(self.yesButton)
+        mute_focus(self.cancelButton)
 
     def value(self) -> str:
         return self.input_edit.text().strip()
@@ -658,6 +696,7 @@ class ProfileListCard(CardWidget):
         self.setObjectName("profileListCard")
         self.setProperty("active", False)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        mute_focus(self)
         self.setStyleSheet(
             """
             QWidget#profileListCard[active="true"] {
@@ -673,6 +712,7 @@ class ProfileListCard(CardWidget):
 
         self.check_box = CheckBox("", self)
         self.check_box.setChecked(checked)
+        mute_focus(self.check_box)
         layout.addWidget(self.check_box, 0, Qt.AlignmentFlag.AlignTop)
 
         text_layout = QVBoxLayout()
@@ -1016,6 +1056,7 @@ class ProfileEditorPanel(QWidget):
         self.stop_button.clicked.connect(self._emit_stop)
         self.delete_button.clicked.connect(self._emit_delete)
 
+        mute_focus_tree(self)
         self.clear_profile()
 
     @property
@@ -2080,6 +2121,18 @@ class ProfilesPage(PageFrame):
         self.profile_list.setFrameShape(QFrame.Shape.NoFrame)
         self.profile_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.profile_list.setSpacing(8)
+        self.profile_list.setStyleSheet(
+            """
+            QListView::item {
+                border: none;
+                background: transparent;
+            }
+            QListView::item:selected {
+                border: none;
+                background: transparent;
+            }
+            """
+        )
         left_layout.addWidget(self.profile_list, 1)
         splitter.addWidget(left_panel)
 
@@ -2104,6 +2157,7 @@ class ProfilesPage(PageFrame):
         self.editor.stop_requested.connect(self.stop_profile)
         self.editor.delete_requested.connect(self.delete_profile)
 
+        mute_focus_tree(self)
         self.refresh_profiles()
 
     def _item_name(self, item: QListWidgetItem | None) -> str:
@@ -2418,6 +2472,7 @@ class GlobalSettingsPage(PageFrame):
 
         self.reload_button.clicked.connect(self.load_settings)
         self.save_button.clicked.connect(self.save_settings)
+        mute_focus_tree(self)
         self.load_settings()
 
     def _build_tiku_defaults_card(self) -> None:
@@ -2691,6 +2746,7 @@ class LogCard(CardWidget):
 
         self.start_button.clicked.connect(lambda: self.start_requested.emit(self.profile_name))
         self.stop_button.clicked.connect(lambda: self.stop_requested.emit(self.profile_name))
+        mute_focus_tree(self)
 
     def refresh_card(self) -> None:
         profile = load_json_profile(self.profile_name)
