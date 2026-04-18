@@ -20,7 +20,10 @@
 ## 运行环境
 
 - Python `3.13+`
-- Windows 桌面环境（支持 `x64` 与 `ARM64` 源码运行）
+- 桌面环境：
+  - Windows `x64` / `ARM64`
+  - macOS `Intel` / `Apple Silicon`
+  - Linux `x64` / `ARM64`
 
 ## 安装方式
 
@@ -88,15 +91,21 @@ desktop_state/
 
 ## Release 构建
 
-仓库已提供基于 GitHub Actions 的手动发布工作流，可用于触发 `Nuitka` 编译并自动创建 Release。
+仓库已提供基于 GitHub Actions 的手动发布工作流，可用于触发多平台并行构建，并在构建完成后统一创建 Release。
 
 典型流程如下：
 
 1. 打开仓库 `Actions`
 2. 选择 `Release`
-3. 手动填写 `tag_name`、`release_name`、`prerelease` 与 `windows_arch`
-4. `windows_arch` 支持 `arm64`、`x64` 与 `both`
-5. 工作流会在对应架构的 Windows GitHub-hosted runner 上完成桌面端编译、压缩产物并自动发布到 GitHub Release
+3. 手动填写 `tag_name`、`release_name` 与 `prerelease`
+4. 工作流会并行构建以下目标：
+   - Windows `x64`
+   - Windows `ARM64`
+   - macOS `Intel`
+   - macOS `Apple Silicon`
+   - Linux `x64`
+   - Linux `ARM64`
+5. 所有成功产物会在最后统一汇总，并自动发布到 GitHub Release
 
 如需本地构建，可执行：
 
@@ -104,10 +113,20 @@ desktop_state/
 powershell -ExecutionPolicy Bypass -File scripts\build_release_local.ps1 -Tag vtest -Architecture x64
 ```
 
+```bash
+bash scripts/build_release_unix.sh --tag vtest --os macos --arch arm64 --output-dir build-macos-arm64 --release-dir release
+```
+
+```bash
+bash scripts/build_release_unix.sh --tag vtest --os linux --arch x64 --output-dir build-linux-x64 --release-dir release
+```
+
 说明如下：
 
 - 本地构建必须使用与目标架构一致的 Python 环境
 - `ARM64` 本地构建建议直接在 `Windows ARM64` 设备上执行
+- Linux 发布会额外生成 `AppImage`、`deb` 与 `rpm`
+- macOS 发布当前输出为压缩后的 `.app` 应用包
 
 ## 与上游的关系
 

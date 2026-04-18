@@ -9,12 +9,14 @@ from pathlib import Path
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prepare release assets for GitHub Actions.")
     parser.add_argument("--build-dir", type=Path)
+    parser.add_argument("--source-path", type=Path)
     parser.add_argument("--release-dir", type=Path, required=True)
     parser.add_argument("--tag", required=True)
     parser.add_argument("--ref-name", required=True)
     parser.add_argument("--sha", required=True)
     parser.add_argument("--platform-label", action="append", required=True)
     parser.add_argument("--artifact-name")
+    parser.add_argument("--archive-format", choices=("zip", "gztar"), default="zip")
     return parser.parse_args()
 
 
@@ -58,16 +60,34 @@ def create_archive(dist_dir: Path, release_dir: Path, artifact_name: str) -> Pat
     return Path(archive_path)
 
 
+def create_archive_from_source(source_path: Path, release_dir: Path, artifact_name: str, archive_format: str) -> Path:
+    archive_base = release_dir / artifact_name
+    archive_path = shutil.make_archive(
+        str(archive_base),
+        archive_format,
+        root_dir=source_path.parent,
+        base_dir=source_path.name,
+    )
+    return Path(archive_path)
+
+
 def main() -> int:
     args = parse_args()
     args.release_dir.mkdir(parents=True, exist_ok=True)
 
     archive_path = None
+    if args.build_dir and args.source_path:
+        raise ValueError("--build-dir 与 --source-path 只能指定其中一个")
+
     if args.build_dir:
         if not args.artifact_name:
             raise ValueError("指定 --build-dir 时必须同时提供 --artifact-name")
         dist_dir = find_dist_dir(args.build_dir)
-        archive_path = create_archive(dist_dir, args.release_dir, args.artifact_name)
+        archive_path = create_archive_from_source(dist_dir, args.release_dir, args.artifact_name, args.archive_format)
+    elif args.source_path:
+        if not args.artifact_name:
+            raise ValueError("指定 --source-path 时必须同时提供 --artifact-name")
+        archive_path = create_archive_from_source(args.source_path, args.release_dir, args.artifact_name, args.archive_format)
 
     write_release_notes(
         args.release_dir / "RELEASE_NOTES.md",

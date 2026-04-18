@@ -16,15 +16,6 @@ on:
         required: true
         default: true
         type: boolean
-      windows_arch:
-        description: Windows build architecture
-        required: true
-        default: arm64
-        type: choice
-        options:
-          - arm64
-          - x64
-          - both
 
 permissions:
   contents: write
@@ -36,19 +27,63 @@ env:
   PIP_NO_PYTHON_VERSION_WARNING: "1"
 
 jobs:
-  build-x64:
-    if: ${{ inputs.windows_arch == 'x64' || inputs.windows_arch == 'both' }}
-    runs-on: windows-2022
+  build:
+    name: Build ${{ matrix.platform_label }}
+    runs-on: ${{ matrix.runs_on }}
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: windows-x64
+            platform_label: Windows x64
+            os_family: windows
+            runs_on: windows-2022
+            python_arch: x64
+            build_arch: x64
+            runner_key: win2022
+          - id: windows-arm64
+            platform_label: Windows ARM64
+            os_family: windows
+            runs_on: windows-11-arm
+            python_arch: arm64
+            build_arch: arm64
+            runner_key: win11arm
+          - id: macos-intel
+            platform_label: macOS Intel
+            os_family: macos
+            runs_on: macos-15-intel
+            python_arch: x64
+            build_arch: x64
+            runner_key: macos15intel
+          - id: macos-arm64
+            platform_label: macOS Apple Silicon
+            os_family: macos
+            runs_on: macos-15
+            python_arch: arm64
+            build_arch: arm64
+            runner_key: macos15arm64
+          - id: linux-x64
+            platform_label: Linux x64
+            os_family: linux
+            runs_on: ubuntu-24.04
+            python_arch: x64
+            build_arch: x64
+            runner_key: ubuntu2404
+          - id: linux-arm64
+            platform_label: Linux ARM64
+            os_family: linux
+            runs_on: ubuntu-24.04-arm
+            python_arch: arm64
+            build_arch: arm64
+            runner_key: ubuntu2404arm
     env:
-      BUILD_ARCH: x64
-      RUNNER_KEY: win2022
-      NUITKA_CACHE_DIR: ${{ github.workspace }}\.nuitka-cache
-      NUITKA_CACHE_DIR_DOWNLOADS: ${{ github.workspace }}\.nuitka-cache\downloads
-      NUITKA_CACHE_DIR_BYTECODE: ${{ github.workspace }}\.nuitka-cache\bytecode
-      NUITKA_CACHE_DIR_DLL_DEPENDENCIES: ${{ github.workspace }}\.nuitka-cache\dll-dependencies
-      NUITKA_CACHE_DIR_CLCACHE: ${{ github.workspace }}\.nuitka-cache\clcache
+      NUITKA_CACHE_DIR: ${{ github.workspace }}/.nuitka-cache
+      NUITKA_CACHE_DIR_DOWNLOADS: ${{ github.workspace }}/.nuitka-cache/downloads
+      NUITKA_CACHE_DIR_BYTECODE: ${{ github.workspace }}/.nuitka-cache/bytecode
+      NUITKA_CACHE_DIR_DLL_DEPENDENCIES: ${{ github.workspace }}/.nuitka-cache/dll-dependencies
+      NUITKA_CACHE_DIR_CLCACHE: ${{ github.workspace }}/.nuitka-cache/clcache
 
     steps:
       - name: Checkout repository
@@ -60,18 +95,18 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-          architecture: x64
+          architecture: ${{ matrix.python_arch }}
           cache: pip
 
       - name: Restore Nuitka cache
         uses: actions/cache/restore@v4
         with:
           path: .nuitka-cache
-          key: ${{ runner.os }}-${{ env.RUNNER_KEY }}-${{ env.BUILD_ARCH }}-nuitka-v1-${{ env.NUITKA_VERSION }}-${{ hashFiles('requirements.txt') }}-${{ github.sha }}
+          key: ${{ runner.os }}-${{ matrix.runner_key }}-${{ matrix.build_arch }}-nuitka-v2-${{ env.NUITKA_VERSION }}-${{ hashFiles('requirements.txt') }}-${{ github.sha }}
           restore-keys: |
-            ${{ runner.os }}-${{ env.RUNNER_KEY }}-${{ env.BUILD_ARCH }}-nuitka-v1-${{ env.NUITKA_VERSION }}-${{ hashFiles('requirements.txt') }}-
-            ${{ runner.os }}-${{ env.RUNNER_KEY }}-${{ env.BUILD_ARCH }}-nuitka-v1-${{ env.NUITKA_VERSION }}-
-            ${{ runner.os }}-${{ env.RUNNER_KEY }}-${{ env.BUILD_ARCH }}-nuitka-v1-
+            ${{ runner.os }}-${{ matrix.runner_key }}-${{ matrix.build_arch }}-nuitka-v2-${{ env.NUITKA_VERSION }}-${{ hashFiles('requirements.txt') }}-
+            ${{ runner.os }}-${{ matrix.runner_key }}-${{ matrix.build_arch }}-nuitka-v2-${{ env.NUITKA_VERSION }}-
+            ${{ runner.os }}-${{ matrix.runner_key }}-${{ matrix.build_arch }}-nuitka-v2-
 
       - name: Prepare Nuitka cache directories
         shell: pwsh
@@ -83,115 +118,74 @@ jobs:
             $env:NUITKA_CACHE_DIR_DLL_DEPENDENCIES, `
             $env:NUITKA_CACHE_DIR_CLCACHE | Out-Null
 
-      - name: Install dependencies
+      - name: Install Python dependencies
+        shell: bash
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
-          python -m pip install --prefer-binary -r requirements.txt nuitka==${{ env.NUITKA_VERSION }} ordered-set zstandard
+          python -m pip install --prefer-binary -r requirements.txt nuitka=="${NUITKA_VERSION}" ordered-set zstandard
 
-      - name: Build desktop application
+      - name: Install Linux packaging dependencies
+        if: ${{ matrix.os_family == 'linux' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y patchelf desktop-file-utils squashfs-tools curl
+          sudo gem install --no-document fpm
+
+      - name: Build Windows release assets
+        if: ${{ matrix.os_family == 'windows' }}
         shell: pwsh
         run: |
           powershell -ExecutionPolicy Bypass -File scripts\build_release_local.ps1 `
             -Tag "${{ inputs.tag_name }}" `
-            -Architecture "${{ env.BUILD_ARCH }}" `
-            -OutputDir "build-${{ env.BUILD_ARCH }}" `
+            -Architecture "${{ matrix.build_arch }}" `
+            -OutputDir "build-${{ matrix.id }}" `
             -ReleaseDir "release"
+
+      - name: Build macOS and Linux release assets
+        if: ${{ matrix.os_family != 'windows' }}
+        shell: bash
+        run: |
+          bash scripts/build_release_unix.sh \
+            --tag "${{ inputs.tag_name }}" \
+            --os "${{ matrix.os_family }}" \
+            --arch "${{ matrix.build_arch }}" \
+            --output-dir "build-${{ matrix.id }}" \
+            --release-dir "release"
+
+      - name: Write platform marker
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          printf '%s\n' "${{ matrix.platform_label }}" > "release/platform-${{ matrix.id }}.txt"
 
       - name: Save Nuitka cache
         if: ${{ always() && !cancelled() }}
         uses: actions/cache/save@v4
         with:
           path: .nuitka-cache
-          key: ${{ runner.os }}-${{ env.RUNNER_KEY }}-${{ env.BUILD_ARCH }}-nuitka-v1-${{ env.NUITKA_VERSION }}-${{ hashFiles('requirements.txt') }}-${{ github.sha }}
+          key: ${{ runner.os }}-${{ matrix.runner_key }}-${{ matrix.build_arch }}-nuitka-v2-${{ env.NUITKA_VERSION }}-${{ hashFiles('requirements.txt') }}-${{ github.sha }}
 
       - name: Upload release bundle
+        if: ${{ success() }}
         uses: actions/upload-artifact@v4
         with:
-          name: release-bundle-windows-x64
-          path: release/*.zip
-          if-no-files-found: error
-
-  build-arm64:
-    if: ${{ inputs.windows_arch == 'arm64' || inputs.windows_arch == 'both' }}
-    runs-on: windows-11-arm
-    permissions:
-      contents: read
-    env:
-      BUILD_ARCH: arm64
-      RUNNER_KEY: win11arm
-      NUITKA_CACHE_DIR: ${{ github.workspace }}\.nuitka-cache
-      NUITKA_CACHE_DIR_DOWNLOADS: ${{ github.workspace }}\.nuitka-cache\downloads
-      NUITKA_CACHE_DIR_BYTECODE: ${{ github.workspace }}\.nuitka-cache\bytecode
-      NUITKA_CACHE_DIR_DLL_DEPENDENCIES: ${{ github.workspace }}\.nuitka-cache\dll-dependencies
-      NUITKA_CACHE_DIR_CLCACHE: ${{ github.workspace }}\.nuitka-cache\clcache
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          architecture: arm64
-          cache: pip
-
-      - name: Restore Nuitka cache
-        uses: actions/cache/restore@v4
-        with:
-          path: .nuitka-cache
-          key: ${{ runner.os }}-${{ env.RUNNER_KEY }}-${{ env.BUILD_ARCH }}-nuitka-v1-${{ env.NUITKA_VERSION }}-${{ hashFiles('requirements.txt') }}-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-${{ env.RUNNER_KEY }}-${{ env.BUILD_ARCH }}-nuitka-v1-${{ env.NUITKA_VERSION }}-${{ hashFiles('requirements.txt') }}-
-            ${{ runner.os }}-${{ env.RUNNER_KEY }}-${{ env.BUILD_ARCH }}-nuitka-v1-${{ env.NUITKA_VERSION }}-
-            ${{ runner.os }}-${{ env.RUNNER_KEY }}-${{ env.BUILD_ARCH }}-nuitka-v1-
-
-      - name: Prepare Nuitka cache directories
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path `
-            $env:NUITKA_CACHE_DIR, `
-            $env:NUITKA_CACHE_DIR_DOWNLOADS, `
-            $env:NUITKA_CACHE_DIR_BYTECODE, `
-            $env:NUITKA_CACHE_DIR_DLL_DEPENDENCIES, `
-            $env:NUITKA_CACHE_DIR_CLCACHE | Out-Null
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install --prefer-binary -r requirements.txt nuitka==${{ env.NUITKA_VERSION }} ordered-set zstandard
-
-      - name: Build desktop application
-        shell: pwsh
-        run: |
-          powershell -ExecutionPolicy Bypass -File scripts\build_release_local.ps1 `
-            -Tag "${{ inputs.tag_name }}" `
-            -Architecture "${{ env.BUILD_ARCH }}" `
-            -OutputDir "build-${{ env.BUILD_ARCH }}" `
-            -ReleaseDir "release"
-
-      - name: Save Nuitka cache
-        if: ${{ always() && !cancelled() }}
-        uses: actions/cache/save@v4
-        with:
-          path: .nuitka-cache
-          key: ${{ runner.os }}-${{ env.RUNNER_KEY }}-${{ env.BUILD_ARCH }}-nuitka-v1-${{ env.NUITKA_VERSION }}-${{ hashFiles('requirements.txt') }}-${{ github.sha }}
-
-      - name: Upload release bundle
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-bundle-windows-arm64
-          path: release/*.zip
+          name: release-bundle-${{ matrix.id }}
+          path: |
+            release/*.zip
+            release/*.AppImage
+            release/*.deb
+            release/*.rpm
+            release/platform-*.txt
           if-no-files-found: error
 
   release:
     runs-on: ubuntu-latest
-    needs:
-      - build-x64
-      - build-arm64
-    if: ${{ always() && !cancelled() && (needs.build-x64.result == 'success' || needs.build-arm64.result == 'success') }}
+    needs: build
+    if: ${{ always() && !cancelled() }}
     permissions:
       contents: write
 
@@ -208,6 +202,18 @@ jobs:
           path: release
           merge-multiple: true
 
+      - name: Verify release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! find release -maxdepth 1 -type f \
+            ! -name 'platform-*.txt' \
+            \( -name '*.zip' -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) \
+            | grep -q .; then
+            echo "未找到可发布产物，停止创建 Release" >&2
+            exit 1
+          fi
+
       - name: Prepare release metadata
         id: meta
         shell: bash
@@ -220,13 +226,16 @@ jobs:
           fi
           echo "release_name=${RELEASE_NAME}" >> "$GITHUB_OUTPUT"
 
+          mapfile -t PLATFORM_LABELS < <(
+            find release -maxdepth 1 -type f -name 'platform-*.txt' -print0 \
+              | xargs -0 cat \
+              | sort -u
+          )
+
           PLATFORM_ARGS=()
-          if [ "${{ needs.build-arm64.result }}" = "success" ]; then
-            PLATFORM_ARGS+=(--platform-label "Windows ARM64")
-          fi
-          if [ "${{ needs.build-x64.result }}" = "success" ]; then
-            PLATFORM_ARGS+=(--platform-label "Windows x64")
-          fi
+          for label in "${PLATFORM_LABELS[@]}"; do
+            PLATFORM_ARGS+=(--platform-label "$label")
+          done
 
           python3 scripts/prepare_release.py \
             --release-dir release \
@@ -244,4 +253,8 @@ jobs:
           name: ${{ steps.meta.outputs.release_name }}
           body_path: release/RELEASE_NOTES.md
           prerelease: ${{ inputs.prerelease }}
-          files: release/*.zip
+          files: |
+            release/*.zip
+            release/*.AppImage
+            release/*.deb
+            release/*.rpm
