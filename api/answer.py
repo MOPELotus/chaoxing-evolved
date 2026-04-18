@@ -1076,9 +1076,14 @@ class AI(Tiku):
 
     def _build_client(self) -> OpenAI:
         if self.http_proxy:
-            httpx_client = httpx.Client(proxy=self.http_proxy)
-            return OpenAI(http_client=httpx_client, base_url=self.endpoint, api_key=self.key)
-        return OpenAI(base_url=self.endpoint, api_key=self.key)
+            httpx_client = httpx.Client(proxy=self.http_proxy, timeout=self.request_timeout_seconds)
+            return OpenAI(
+                http_client=httpx_client,
+                base_url=self.endpoint,
+                api_key=self.key,
+                timeout=self.request_timeout_seconds,
+            )
+        return OpenAI(base_url=self.endpoint, api_key=self.key, timeout=self.request_timeout_seconds)
 
     def _wait_for_rate_limit(self) -> None:
         if not self.last_request_time:
@@ -1198,6 +1203,7 @@ class AI(Tiku):
         self.model = self._conf['model']
         self.http_proxy = self._conf['http_proxy']
         self.min_interval_seconds = int(self._conf['min_interval_seconds'])
+        self.request_timeout_seconds = int(self._conf.get('request_timeout_seconds', 600))
 
     def check_llm_connection(self) -> bool:
         """
@@ -1206,11 +1212,7 @@ class AI(Tiku):
         """
         logger.info(f'正在检查 {self.name} 连接...')
         try:
-            if self.http_proxy:
-                httpx_client = httpx.Client(proxy=self.http_proxy)
-                client = OpenAI(http_client=httpx_client, base_url=self.endpoint, api_key=self.key)
-            else:
-                client = OpenAI(base_url=self.endpoint, api_key=self.key)
+            client = self._build_client()
             
             # 发送一个简单的测试请求
             completion = client.chat.completions.create(
@@ -1286,7 +1288,7 @@ class SiliconFlow(Tiku):
                     self.api_endpoint,
                     headers=self._build_headers(),
                     json=payload,
-                    timeout=30,
+                    timeout=self.request_timeout_seconds,
                 )
                 self.last_request_time = time.time()
                 if response.status_code == 200:
@@ -1378,9 +1380,8 @@ class SiliconFlow(Tiku):
         self.api_key = self._conf['siliconflow_key']
 
         self.model_name = self._conf.get('siliconflow_model', 'deepseek-ai/DeepSeek-V3')
-
-
         self.min_interval = int(self._conf.get('min_interval_seconds', 3))
+        self.request_timeout_seconds = int(self._conf.get('request_timeout_seconds', 600))
 
     def check_llm_connection(self) -> bool:
         """
@@ -1413,7 +1414,7 @@ class SiliconFlow(Tiku):
                 self.api_endpoint,
                 headers=headers,
                 json=payload,
-                timeout=30
+                timeout=self.request_timeout_seconds
             )
             
             if response.status_code == 200:

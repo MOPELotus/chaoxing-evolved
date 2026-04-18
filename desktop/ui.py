@@ -1170,6 +1170,9 @@ class ProfileEditorPanel(QWidget):
         self.min_interval_spin = SpinBox(self.tiku_card)
         self.min_interval_spin.setRange(0, 120)
         self.min_interval_override_check = self._create_override_check("tiku", "min_interval_seconds", self.min_interval_spin, self.tiku_card)
+        self.request_timeout_spin = SpinBox(self.tiku_card)
+        self.request_timeout_spin.setRange(10, 3600)
+        self.request_timeout_override_check = self._create_override_check("tiku", "request_timeout_seconds", self.request_timeout_spin, self.tiku_card)
 
         self.silicon_key_edit = LineEdit(self.tiku_card)
         self.silicon_key_edit.setPlaceholderText("SiliconFlow 密钥")
@@ -1208,6 +1211,7 @@ class ProfileEditorPanel(QWidget):
         detail_grid.addWidget(make_override_field("AI 模型", self.ai_model_edit, self.ai_model_override_check), 2, 0)
         detail_grid.addWidget(make_override_field("HTTP 代理", self.http_proxy_edit, self.http_proxy_override_check), 2, 1)
         detail_grid.addWidget(make_override_field("最小请求间隔", self.min_interval_spin, self.min_interval_override_check), 3, 0)
+        detail_grid.addWidget(make_override_field("请求超时（秒）", self.request_timeout_spin, self.request_timeout_override_check), 3, 1)
         detail_grid.addWidget(make_override_field("硅基密钥", self.silicon_key_edit, self.silicon_key_override_check), 4, 0)
         detail_grid.addWidget(make_override_field("硅基模型", self.silicon_model_edit, self.silicon_model_override_check), 4, 1)
         detail_grid.addWidget(make_override_field("硅基接口地址", self.silicon_endpoint_edit, self.silicon_endpoint_override_check), 5, 0, 1, 2)
@@ -1237,6 +1241,7 @@ class ProfileEditorPanel(QWidget):
             self.ai_model_edit,
             self.http_proxy_edit,
             self.min_interval_spin,
+            self.request_timeout_spin,
             self.silicon_key_edit,
             self.silicon_model_edit,
             self.silicon_endpoint_edit,
@@ -1511,6 +1516,7 @@ class ProfileEditorPanel(QWidget):
         self.ai_model_edit.setText(str(tiku_defaults.get("model", "") or ""))
         self.http_proxy_edit.setText(str(tiku_defaults.get("http_proxy", "") or ""))
         self.min_interval_spin.setValue(config_int(tiku_defaults.get("min_interval_seconds", 3), 3))
+        self.request_timeout_spin.setValue(config_int(tiku_defaults.get("request_timeout_seconds", 600), 600))
         self.silicon_key_edit.setText(str(tiku_defaults.get("siliconflow_key", "") or ""))
         self.silicon_model_edit.setText(str(tiku_defaults.get("siliconflow_model", "") or ""))
         self.silicon_endpoint_edit.setText(str(tiku_defaults.get("siliconflow_endpoint", "") or ""))
@@ -1594,6 +1600,7 @@ class ProfileEditorPanel(QWidget):
         self.ai_model_edit.setText(str(effective_tiku.get("model", "") or ""))
         self.http_proxy_edit.setText(str(effective_tiku.get("http_proxy", "") or ""))
         self.min_interval_spin.setValue(config_int(effective_tiku.get("min_interval_seconds", 3), 3))
+        self.request_timeout_spin.setValue(config_int(effective_tiku.get("request_timeout_seconds", 600), 600))
         self.silicon_key_edit.setText(str(effective_tiku.get("siliconflow_key", "") or ""))
         self.silicon_model_edit.setText(str(effective_tiku.get("siliconflow_model", "") or ""))
         self.silicon_endpoint_edit.setText(str(effective_tiku.get("siliconflow_endpoint", "") or ""))
@@ -1613,6 +1620,7 @@ class ProfileEditorPanel(QWidget):
             "model",
             "http_proxy",
             "min_interval_seconds",
+            "request_timeout_seconds",
             "siliconflow_key",
             "siliconflow_model",
             "siliconflow_endpoint",
@@ -1763,6 +1771,7 @@ class ProfileEditorPanel(QWidget):
         apply_override(tiku, tiku_overrides, "tiku", "key", self.ai_key_edit.text().strip())
         apply_override(tiku, tiku_overrides, "tiku", "model", self.ai_model_edit.text().strip())
         apply_override(tiku, tiku_overrides, "tiku", "min_interval_seconds", int(self.min_interval_spin.value()))
+        apply_override(tiku, tiku_overrides, "tiku", "request_timeout_seconds", int(self.request_timeout_spin.value()))
         apply_override(tiku, tiku_overrides, "tiku", "http_proxy", self.http_proxy_edit.text().strip())
         apply_override(tiku, tiku_overrides, "tiku", "siliconflow_key", self.silicon_key_edit.text().strip())
         apply_override(tiku, tiku_overrides, "tiku", "siliconflow_model", self.silicon_model_edit.text().strip())
@@ -2428,6 +2437,8 @@ class GlobalSettingsPage(PageFrame):
         self.http_proxy_edit.setPlaceholderText("默认代理")
         self.min_interval_spin = SpinBox(self.tiku_card)
         self.min_interval_spin.setRange(0, 120)
+        self.request_timeout_spin = SpinBox(self.tiku_card)
+        self.request_timeout_spin.setRange(10, 3600)
         self.silicon_key_edit = LineEdit(self.tiku_card)
         self.silicon_key_edit.setPlaceholderText("SiliconFlow 密钥")
         self.silicon_model_edit = LineEdit(self.tiku_card)
@@ -2450,6 +2461,7 @@ class GlobalSettingsPage(PageFrame):
         grid.addWidget(make_field("AI 模型", self.ai_model_edit), 2, 0)
         grid.addWidget(make_field("HTTP 代理", self.http_proxy_edit), 2, 1)
         grid.addWidget(make_field("最小请求间隔", self.min_interval_spin), 3, 0)
+        grid.addWidget(make_field("请求超时（秒）", self.request_timeout_spin), 3, 1)
         grid.addWidget(make_field("硅基密钥", self.silicon_key_edit), 4, 0)
         grid.addWidget(make_field("硅基模型", self.silicon_model_edit), 4, 1)
         grid.addWidget(make_field("硅基接口地址", self.silicon_endpoint_edit), 5, 0, 1, 2)
@@ -2545,6 +2557,7 @@ class GlobalSettingsPage(PageFrame):
         self.ai_model_edit.setText(str(tiku.get("model", "")))
         self.http_proxy_edit.setText(str(tiku.get("http_proxy", "")))
         self.min_interval_spin.setValue(config_int(tiku.get("min_interval_seconds", 3), 3))
+        self.request_timeout_spin.setValue(config_int(tiku.get("request_timeout_seconds", 600), 600))
         self.silicon_key_edit.setText(str(tiku.get("siliconflow_key", "")))
         self.silicon_model_edit.setText(str(tiku.get("siliconflow_model", "")))
         self.silicon_endpoint_edit.setText(str(tiku.get("siliconflow_endpoint", "")))
@@ -2598,6 +2611,7 @@ class GlobalSettingsPage(PageFrame):
                 "model": self.ai_model_edit.text().strip(),
                 "http_proxy": self.http_proxy_edit.text().strip(),
                 "min_interval_seconds": str(int(self.min_interval_spin.value())),
+                "request_timeout_seconds": str(int(self.request_timeout_spin.value())),
                 "siliconflow_key": self.silicon_key_edit.text().strip(),
                 "siliconflow_model": self.silicon_model_edit.text().strip(),
                 "siliconflow_endpoint": self.silicon_endpoint_edit.text().strip(),
