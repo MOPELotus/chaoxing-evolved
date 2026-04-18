@@ -59,6 +59,10 @@ def should_send_internal_notifications() -> bool:
     return os.environ.get("DESKTOP_MANAGED_RUN", "").strip().lower() not in {"1", "true", "yes", "on"}
 
 
+def should_initialize_internal_notifications() -> bool:
+    return should_send_internal_notifications()
+
+
 def _normalize_common_config(section: dict[str, Any]) -> dict[str, Any]:
     course_list = section.get("course_list", []) or []
     if isinstance(course_list, str):
@@ -361,9 +365,10 @@ def run_loaded_profile(profile: dict, global_settings: dict | None = None) -> No
 
         configure_profile_runtime(effective_profile["name"], common_config)
 
-        notification.config_set(notification_config)
-        notification = notification.get_notification_from_config()
-        notification.init_notification()
+        if should_initialize_internal_notifications():
+            notification.config_set(notification_config)
+            notification = notification.get_notification_from_config()
+            notification.init_notification()
 
         chaoxing = init_chaoxing(common_config, tiku_config)
         login_state = chaoxing.login(login_with_cookies=common_config.get("use_cookies", False))
