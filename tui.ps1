@@ -135,6 +135,101 @@ function Get-StatusLabel {
     }
 }
 
+function Get-CharCellWidth {
+    param([char]$Char)
+
+    $code = [int][char]$Char
+
+    if (
+        ($code -ge 0x0300 -and $code -le 0x036F) -or
+        ($code -ge 0x1AB0 -and $code -le 0x1AFF) -or
+        ($code -ge 0x1DC0 -and $code -le 0x1DFF) -or
+        ($code -ge 0x20D0 -and $code -le 0x20FF) -or
+        ($code -ge 0xFE20 -and $code -le 0xFE2F)
+    ) {
+        return 0
+    }
+
+    if (
+        ($code -ge 0x1100 -and $code -le 0x115F) -or
+        ($code -ge 0x2E80 -and $code -le 0xA4CF) -or
+        ($code -ge 0xAC00 -and $code -le 0xD7A3) -or
+        ($code -ge 0xF900 -and $code -le 0xFAFF) -or
+        ($code -ge 0xFE10 -and $code -le 0xFE6F) -or
+        ($code -ge 0xFF00 -and $code -le 0xFF60) -or
+        ($code -ge 0xFFE0 -and $code -le 0xFFE6)
+    ) {
+        return 2
+    }
+
+    return 1
+}
+
+function Get-DisplayWidth {
+    param([AllowNull()][string]$Text)
+
+    if ([string]::IsNullOrEmpty($Text)) {
+        return 0
+    }
+
+    $width = 0
+    foreach ($char in $Text.ToCharArray()) {
+        $width += Get-CharCellWidth -Char $char
+    }
+    return $width
+}
+
+function New-FillText {
+    param(
+        [string]$Character,
+        [int]$Width
+    )
+
+    if ($Width -le 0) {
+        return ""
+    }
+
+    return ($Character * $Width)
+}
+
+function Truncate-DisplayText {
+    param(
+        [AllowNull()][string]$Text,
+        [int]$Width,
+        [string]$Suffix = ""
+    )
+
+    if ($Width -le 0) {
+        return ""
+    }
+
+    $value = if ($null -eq $Text) { "" } else { [string]$Text }
+    $suffixText = if ($null -eq $Suffix) { "" } else { [string]$Suffix }
+    $suffixWidth = Get-DisplayWidth -Text $suffixText
+
+    if ((Get-DisplayWidth -Text $value) -le $Width) {
+        return $value
+    }
+
+    if ($suffixWidth -ge $Width) {
+        $suffixText = ""
+        $suffixWidth = 0
+    }
+
+    $builder = New-Object System.Text.StringBuilder
+    $usedWidth = 0
+    foreach ($char in $value.ToCharArray()) {
+        $charWidth = Get-CharCellWidth -Char $char
+        if (($usedWidth + $charWidth + $suffixWidth) -gt $Width) {
+            break
+        }
+        [void]$builder.Append($char)
+        $usedWidth += $charWidth
+    }
+
+    return $builder.ToString() + $suffixText
+}
+
 function Fit-Text {
     param(
         [string]$Text,
@@ -146,13 +241,13 @@ function Fit-Text {
     }
 
     $value = if ($null -eq $Text) { "" } else { [string]$Text }
-    if ($value.Length -gt $Width) {
-        if ($Width -eq 1) {
-            return "…"
-        }
-        return $value.Substring(0, $Width - 1) + "…"
+    $displayWidth = Get-DisplayWidth -Text $value
+    if ($displayWidth -gt $Width) {
+        $value = Truncate-DisplayText -Text $value -Width $Width -Suffix "…"
+        $displayWidth = Get-DisplayWidth -Text $value
     }
-    return $value.PadRight($Width)
+
+    return $value + (New-FillText -Character " " -Width ($Width - $displayWidth))
 }
 
 function New-BoxLines {
@@ -167,10 +262,8 @@ function New-BoxLines {
     $visibleLines = @($Lines)
     $result = New-Object System.Collections.Generic.List[string]
     $titleText = if ([string]::IsNullOrWhiteSpace($Title)) { "" } else { " $Title " }
-    if ($titleText.Length -gt $innerWidth) {
-        $titleText = $titleText.Substring(0, $innerWidth)
-    }
-    $topContent = $titleText.PadRight($innerWidth, [char]"─")
+    $titleText = Truncate-DisplayText -Text $titleText -Width $innerWidth
+    $topContent = $titleText + (New-FillText -Character "─" -Width ($innerWidth - (Get-DisplayWidth -Text $titleText)))
     $result.Add("┌" + $topContent + "┐")
 
     foreach ($line in $visibleLines | Select-Object -First ([Math]::Max($Height - 2, 0))) {
@@ -178,11 +271,34 @@ function New-BoxLines {
     }
 
     while ($result.Count -lt ($Height - 1)) {
-        $result.Add("│" + ("".PadRight($innerWidth)) + "│")
+        $result.Add("│" + (New-FillText -Character " " -Width $innerWidth) + "│")
     }
 
-    $result.Add("└" + ("".PadRight($innerWidth, [char]"─")) + "┘")
+    $result.Add("└" + (New-FillText -Character "─" -Width $innerWidth) + "┘")
     return [string[]]$result.ToArray()
+}
+
+function Get-ConsoleSize {
+    $width = 160
+    $height = 48
+
+    try {
+        $width = [Console]::WindowWidth
+        $height = [Console]::WindowHeight
+    }
+    catch {
+        try {
+            $width = $Host.UI.RawUI.WindowSize.Width
+            $height = $Host.UI.RawUI.WindowSize.Height
+        }
+        catch {
+        }
+    }
+
+    return @{
+        Width = [Math]::Max($width, 100)
+        Height = [Math]::Max($height, 32)
+    }
 }
 
 function Format-DateTime {
@@ -310,10 +426,15 @@ function Get-RightPaneLines {
 }
 
 function Render-Tui {
-    Clear-Host
+    try {
+        Clear-Host
+    }
+    catch {
+    }
 
-    $width = [Math]::Max([Console]::WindowWidth, 100)
-    $height = [Math]::Max([Console]::WindowHeight, 32)
+    $consoleSize = Get-ConsoleSize
+    $width = [int]$consoleSize.Width
+    $height = [int]$consoleSize.Height
     $leftWidth = [Math]::Min(40, [Math]::Max([int]($width * 0.34), 28))
     $rightWidth = [Math]::Max($width - $leftWidth - 3, 40)
     $panelHeight = [Math]::Max($height - 8, 18)
@@ -324,7 +445,7 @@ function Render-Tui {
     Write-Host (Fit-Text -Text $script:Title -Width ($width - 1))
     Write-Host (Fit-Text -Text $tabLine -Width ($width - 1))
     Write-Host (Fit-Text -Text ("刷新时间：{0}    当前消息：{1}" -f $script:State.LastRefresh.ToString("yyyy-MM-dd HH:mm:ss"), $script:State.Message) -Width ($width - 1))
-    Write-Host ("".PadRight([Math]::Max($width - 1, 1), "─"))
+    Write-Host (New-FillText -Character "─" -Width ([Math]::Max($width - 1, 1)))
 
     $profileLines = New-Object System.Collections.Generic.List[string]
     if ($script:State.Profiles.Count -eq 0) {
@@ -346,7 +467,7 @@ function Render-Tui {
         Write-Host ($leftBox[$i] + " " + $rightBox[$i])
     }
 
-    Write-Host ("".PadRight([Math]::Max($width - 1, 1), "─"))
+    Write-Host (New-FillText -Character "─" -Width ([Math]::Max($width - 1, 1)))
     Write-Host "热键：Tab 切页  ↑↓ 选中  R 刷新  N 新建  D 删除  E 编辑档案  G 编辑全局  S 启动  X 停止  Q 退出"
 }
 
@@ -597,6 +718,10 @@ try {
         exit 0
     }
     Refresh-Data
+    if ($env:CHAOXING_TUI_RENDER_ONCE -eq "1") {
+        Render-Tui
+        exit 0
+    }
     while ($true) {
         Render-Tui
         $key = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
