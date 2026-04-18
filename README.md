@@ -7,7 +7,7 @@
 ## 功能概览
 
 - 多账号并行隔离：每个档案自动使用独立的 Cookies 与题库缓存
-- 桌面控制中心：基于 `PyQt5 + PyQt-Fluent-Widgets`
+- 桌面控制中心：基于 `PyQt6 + PyQt6-Fluent-Widgets`
 - JSON 配置体系：统一使用 `desktop_state/profiles/*.json`
 - 原生运行链路：桌面端直接读取 JSON 配置并启动任务
 - 全局设置：题库、AI、通知与桌面提醒的默认值集中维护
@@ -36,12 +36,12 @@ pip install -r requirements.txt
 pip install .
 ```
 
-如需安装适配 `PyQt5` 的轻量版 Fluent 组件，可直接执行以下命令。
+如需单独安装适配 `PyQt6` 的 Fluent 组件，可直接执行以下命令。
 
-To install lite version for PyQt5:
+To install lite version for PyQt6:
 
 ```bash
-pip install PyQt-Fluent-Widgets -i https://pypi.org/simple/
+pip install PyQt6-Fluent-Widgets -i https://pypi.org/simple/
 ```
 
 ## 启动方式

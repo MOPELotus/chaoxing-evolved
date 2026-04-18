@@ -20,17 +20,13 @@ def _configure_stdio_utf8() -> None:
 
 
 def _run_desktop_ui() -> int:
-    from PyQt5.QtCore import QCoreApplication, Qt
-    from PyQt5.QtWidgets import QApplication
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QApplication
 
     os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
     os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "1")
     os.environ.setdefault("QT_SCALE_FACTOR_ROUNDING_POLICY", "PassThrough")
 
-    if hasattr(Qt, "AA_EnableHighDpiScaling"):
-        QCoreApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    if hasattr(Qt, "AA_UseHighDpiPixmaps"):
-        QCoreApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     if hasattr(QApplication, "setHighDpiScaleFactorRoundingPolicy") and hasattr(Qt, "HighDpiScaleFactorRoundingPolicy"):
         QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
 

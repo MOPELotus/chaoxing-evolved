@@ -7,13 +7,14 @@ import sys
 from copy import deepcopy
 from pathlib import Path
 
-from PyQt5.QtCore import QSize, QThread, Qt, pyqtSignal
-from PyQt5.QtGui import QIcon
-from PyQt5.QtWidgets import (
+from PyQt6.QtCore import QSize, QThread, Qt, pyqtSignal
+from PyQt6.QtGui import QIcon
+from PyQt6.QtWidgets import (
     QApplication,
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QLineEdit,
     QListWidgetItem,
     QSplitter,
     QStyle,
@@ -228,7 +229,7 @@ def get_notification_target(combo: ComboBox) -> str:
 
 
 def exec_dialog(dialog) -> int:
-    return dialog.exec() if hasattr(dialog, "exec") else dialog.exec_()
+    return dialog.exec()
 
 
 def show_bar(
@@ -243,7 +244,7 @@ def show_bar(
     fn(
         title=title,
         content=content,
-        orient=Qt.Horizontal,
+        orient=Qt.Orientation.Horizontal,
         isClosable=True,
         position=position,
         duration=duration,
@@ -333,8 +334,8 @@ def make_override_field(label: str, widget: QWidget, toggle: CheckBox, hint: str
 def make_scroll_area(parent: QWidget | None = None) -> SmoothScrollArea:
     scroll = SmoothScrollArea(parent)
     scroll.setWidgetResizable(True)
-    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-    scroll.setFrameShape(QFrame.NoFrame)
+    scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+    scroll.setFrameShape(QFrame.Shape.NoFrame)
     return scroll
 
 
@@ -477,7 +478,7 @@ class DashboardHeroCard(CardWidget):
         badge_label = CaptionLabel("桌面控制台", badge)
         badge_label.setObjectName("dashboardHeroBadgeText")
         badge_layout.addWidget(badge_label)
-        left_layout.addWidget(badge, 0, Qt.AlignLeft)
+        left_layout.addWidget(badge, 0, Qt.AlignmentFlag.AlignLeft)
 
         self.title_label = LargeTitleLabel(APP_TITLE, left_widget)
         self.subtitle_label = BodyLabel("统一管理配置、全局凭据与实时运行状态。", left_widget)
@@ -656,7 +657,7 @@ class ProfileListCard(CardWidget):
         self.profile_name = profile_name
         self.setObjectName("profileListCard")
         self.setProperty("active", False)
-        self.setCursor(Qt.PointingHandCursor)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setStyleSheet(
             """
             QWidget#profileListCard[active="true"] {
@@ -672,7 +673,7 @@ class ProfileListCard(CardWidget):
 
         self.check_box = CheckBox("", self)
         self.check_box.setChecked(checked)
-        layout.addWidget(self.check_box, 0, Qt.AlignTop)
+        layout.addWidget(self.check_box, 0, Qt.AlignmentFlag.AlignTop)
 
         text_layout = QVBoxLayout()
         text_layout.setSpacing(4)
@@ -700,7 +701,7 @@ class ProfileListCard(CardWidget):
 
     def mouseReleaseEvent(self, event) -> None:
         super().mouseReleaseEvent(event)
-        if event.button() == Qt.LeftButton:
+        if event.button() == Qt.MouseButton.LeftButton:
             self.activated.emit(self.profile_name)
 
     def _emit_checked_changed(self) -> None:
@@ -1035,7 +1036,7 @@ class ProfileEditorPanel(QWidget):
         self.username_edit = LineEdit(self.common_card)
         self.username_edit.setPlaceholderText("手机号账号")
         self.password_edit = LineEdit(self.common_card)
-        self.password_edit.setEchoMode(LineEdit.Password)
+        self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.password_edit.setPlaceholderText("登录密码")
         self.speed_spin = DoubleSpinBox(self.common_card)
         self.speed_spin.setRange(1.0, 2.0)
@@ -2029,7 +2030,7 @@ class ProfilesPage(PageFrame):
         self.profile_items: dict[str, QListWidgetItem] = {}
         self.profile_cards: dict[str, ProfileListCard] = {}
 
-        splitter = QSplitter(Qt.Horizontal, self)
+        splitter = QSplitter(Qt.Orientation.Horizontal, self)
         splitter.setHandleWidth(10)
         splitter.setChildrenCollapsible(False)
         self.root_layout.addWidget(splitter, 1)
@@ -2076,8 +2077,8 @@ class ProfilesPage(PageFrame):
         left_layout.addWidget(self.selection_status)
 
         self.profile_list = ListWidget(left_panel)
-        self.profile_list.setFrameShape(QFrame.NoFrame)
-        self.profile_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.profile_list.setFrameShape(QFrame.Shape.NoFrame)
+        self.profile_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.profile_list.setSpacing(8)
         left_layout.addWidget(self.profile_list, 1)
         splitter.addWidget(left_panel)
@@ -2108,7 +2109,7 @@ class ProfilesPage(PageFrame):
     def _item_name(self, item: QListWidgetItem | None) -> str:
         if not item:
             return ""
-        return str(item.data(Qt.UserRole) or "")
+        return str(item.data(Qt.ItemDataRole.UserRole) or "")
 
     def refresh_profiles(self, select_name: str | None = None, preserve_editor: bool = False) -> None:
         names = [path.stem for path in list_json_profiles()]
@@ -2123,7 +2124,7 @@ class ProfilesPage(PageFrame):
         self.profile_cards.clear()
         for name in visible_names:
             item = QListWidgetItem()
-            item.setData(Qt.UserRole, name)
+            item.setData(Qt.ItemDataRole.UserRole, name)
             item.setSizeHint(QSize(0, 86))
             self.profile_list.addItem(item)
             self.profile_items[name] = item
@@ -2765,7 +2766,7 @@ class DesktopMainWindow(MSFluentWindow):
 
         icon = self.windowIcon()
         if icon.isNull():
-            icon = QApplication.style().standardIcon(QStyle.SP_ComputerIcon)
+            icon = QApplication.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
             self.setWindowIcon(icon)
 
         tray_icon = QSystemTrayIcon(icon, self)
@@ -2803,9 +2804,9 @@ class DesktopMainWindow(MSFluentWindow):
             "stopped": "warning",
         }
         tray_icon_map = {
-            "completed": QSystemTrayIcon.Information,
-            "failed": QSystemTrayIcon.Critical,
-            "stopped": QSystemTrayIcon.Warning,
+            "completed": QSystemTrayIcon.MessageIcon.Information,
+            "failed": QSystemTrayIcon.MessageIcon.Critical,
+            "stopped": QSystemTrayIcon.MessageIcon.Warning,
         }
 
         run = self.run_manager.get_run(profile_name)
@@ -2827,7 +2828,7 @@ class DesktopMainWindow(MSFluentWindow):
             self.tray_icon.showMessage(
                 title_map.get(status, "任务状态已更新"),
                 detail.replace("\n", " "),
-                tray_icon_map.get(status, QSystemTrayIcon.Information),
+                tray_icon_map.get(status, QSystemTrayIcon.MessageIcon.Information),
                 5000,
             )
 
@@ -2838,4 +2839,4 @@ def run_desktop_app() -> int:
     application.setApplicationName(APP_TITLE)
     window = DesktopMainWindow()
     window.show()
-    return application.exec_()
+    return application.exec()

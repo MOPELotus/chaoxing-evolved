@@ -26,7 +26,7 @@ try {
         --standalone `
         --assume-yes-for-downloads `
         --experimental=force-dependencies-pefile `
-        --enable-plugin=pyqt5 `
+        --enable-plugin=pyqt6 `
         --plugin-no-detection `
         --windows-console-mode=disable `
         --lto=no `
