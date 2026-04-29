@@ -8,10 +8,10 @@ requires-python = ">=3.13,<4.0"
 dynamic = ["dependencies"]
 
 [tool.setuptools]
-py-modules = ["desktop_app"]
+py-modules = ["desktop_app", "cmd_pro"]
 
 [tool.setuptools.packages.find]
-include = ["api*", "desktop*"]
+include = ["api*", "desktop*", "cmdpro*"]
 
 [tool.setuptools.dynamic]
 dependencies = {file=["requirements.txt"]}
