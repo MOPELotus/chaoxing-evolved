@@ -56,6 +56,14 @@ with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.St
         SmoothScrollArea,
     )
 
+from api.provider_catalog import (
+    COLLAB_PROVIDER_OPTIONS,
+    DECISION_PROVIDER_OPTIONS,
+    PROVIDER_OPTIONS,
+    provider_from_label,
+    provider_items,
+    provider_label,
+)
 from api.json_store import (
     DEFAULT_GLOBAL_SETTINGS,
     DEFAULT_PROFILE,
@@ -77,9 +85,6 @@ from desktop.runtime import RunManager, fetch_courses_for_profile
 APP_TITLE = "超星助手桌面版"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 JSON_PROFILE_DIR = PROJECT_ROOT / "desktop_state" / "profiles"
-PROVIDER_OPTIONS = ["TikuYanxi", "SiliconFlow", "AI", "TikuLike", "TikuAdapter", "MultiTiku"]
-COLLAB_PROVIDER_OPTIONS = ["TikuYanxi", "SiliconFlow", "AI", "TikuLike", "TikuAdapter"]
-DECISION_PROVIDER_OPTIONS = ["SiliconFlow", "AI", "TikuYanxi", "TikuLike", "TikuAdapter"]
 NOTOPEN_ACTION_OPTIONS = ["retry", "continue", "ask"]
 NOTOPEN_ACTION_LABELS = {
     "retry": "重试",
@@ -210,6 +215,49 @@ def config_int(value: object, default: int) -> int:
 def set_combo_text(combo: ComboBox, value: str, fallback_index: int = 0) -> None:
     index = combo.findText(value)
     combo.setCurrentIndex(index if index >= 0 else fallback_index)
+
+
+def set_combo_data(combo: ComboBox, value: str, fallback_index: int = 0) -> None:
+    target = str(value or "").strip()
+    if not target:
+        combo.setCurrentIndex(fallback_index)
+        return
+
+    for index in range(combo.count()):
+        if str(combo.itemData(index) or "").strip() == target:
+            combo.setCurrentIndex(index)
+            return
+    combo.setCurrentIndex(fallback_index)
+
+
+def get_combo_data(combo: ComboBox, fallback: str = "") -> str:
+    current = combo.currentData()
+    if current not in (None, ""):
+        return str(current).strip()
+    text = combo.currentText().strip()
+    return text or fallback
+
+
+def normalize_provider_value(value: object, default: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return default
+    normalized = provider_from_label(raw, default=raw)
+    return normalized or default
+
+
+def normalize_provider_list(values: object) -> list[str]:
+    if isinstance(values, list):
+        raw_values = values
+    else:
+        raw_values = split_csv(str(values or ""))
+
+    normalized_values: list[str] = []
+    for item in raw_values:
+        normalized = normalize_provider_value(item, "")
+        if normalized and normalized not in normalized_values:
+            normalized_values.append(normalized)
+    return normalized_values
 
 
 def set_notopen_action(combo: ComboBox, value: str) -> None:
@@ -1155,9 +1203,11 @@ class ProfileEditorPanel(QWidget):
         top_grid.setVerticalSpacing(12)
 
         self.provider_combo = ComboBox(self.tiku_card)
-        self.provider_combo.addItems(PROVIDER_OPTIONS)
+        for value, label in provider_items(PROVIDER_OPTIONS):
+            self.provider_combo.addItem(label, value)
         self.decision_provider_combo = ComboBox(self.tiku_card)
-        self.decision_provider_combo.addItems(DECISION_PROVIDER_OPTIONS)
+        for value, label in provider_items(DECISION_PROVIDER_OPTIONS):
+            self.decision_provider_combo.addItem(label, value)
         self.check_connection_check = CheckBox("启动时检查大模型连接", self.tiku_card)
         self.submit_check = CheckBox("达到覆盖率后自动提交", self.tiku_card)
         self.cover_rate_spin = DoubleSpinBox(self.tiku_card)
@@ -1181,7 +1231,7 @@ class ProfileEditorPanel(QWidget):
         self.provider_summary.setWordWrap(True)
         self.tiku_card.body_layout.addWidget(self.provider_summary)
         self.provider_chip_panel = ChipPanel("暂无可用的协同题库。", self.tiku_card)
-        self.provider_chip_panel.set_items([(item, item) for item in COLLAB_PROVIDER_OPTIONS], [])
+        self.provider_chip_panel.set_items(provider_items(COLLAB_PROVIDER_OPTIONS), [])
         self.tiku_card.body_layout.addWidget(
             make_field(
                 "协同题库",
@@ -1240,7 +1290,7 @@ class ProfileEditorPanel(QWidget):
         self.like_retry_override_check = self._create_override_check("tiku", "likeapi_retry", self.like_retry_check, self.tiku_card)
 
         self.adapter_url_edit = LineEdit(self.tiku_card)
-        self.adapter_url_edit.setPlaceholderText("TikuAdapter 地址")
+        self.adapter_url_edit.setPlaceholderText("输入荷花题库地址；TikuAdapter 也可复用此地址")
         self.adapter_url_override_check = self._create_override_check("tiku", "url", self.adapter_url_edit, self.tiku_card)
         self.true_list_edit = LineEdit(self.tiku_card)
         self.true_list_edit.setPlaceholderText("正确,对,√,是")
@@ -1262,7 +1312,7 @@ class ProfileEditorPanel(QWidget):
         detail_grid.addWidget(make_override_field("LIKE 联网搜索", self.like_search_check, self.like_search_override_check), 7, 0)
         detail_grid.addWidget(make_override_field("LIKE 视觉识图", self.like_vision_check, self.like_vision_override_check), 7, 1)
         detail_grid.addWidget(make_override_field("LIKE 自动重试", self.like_retry_check, self.like_retry_override_check), 8, 0)
-        detail_grid.addWidget(make_override_field("TikuAdapter 地址", self.adapter_url_edit, self.adapter_url_override_check), 9, 0, 1, 2)
+        detail_grid.addWidget(make_override_field("荷花题库地址", self.adapter_url_edit, self.adapter_url_override_check), 9, 0, 1, 2)
         detail_grid.addWidget(make_field("判断题真值列表", self.true_list_edit), 10, 0)
         detail_grid.addWidget(make_field("判断题假值列表", self.false_list_edit), 10, 1)
         self.tiku_card.body_layout.addLayout(detail_grid)
@@ -1546,8 +1596,8 @@ class ProfileEditorPanel(QWidget):
         self.cookies_path_edit.clear()
         self.cache_path_edit.clear()
 
-        set_combo_text(self.provider_combo, "TikuYanxi")
-        set_combo_text(self.decision_provider_combo, "SiliconFlow")
+        set_combo_data(self.provider_combo, "TikuYanxi")
+        set_combo_data(self.decision_provider_combo, "SiliconFlow")
         self.check_connection_check.setChecked(True)
         self.submit_check.setChecked(False)
         self.cover_rate_spin.setValue(0.9)
@@ -1567,7 +1617,7 @@ class ProfileEditorPanel(QWidget):
         self.like_search_check.setChecked(parse_bool(tiku_defaults.get("likeapi_search", False), False))
         self.like_vision_check.setChecked(parse_bool(tiku_defaults.get("likeapi_vision", True), True))
         self.like_retry_check.setChecked(parse_bool(tiku_defaults.get("likeapi_retry", True), True))
-        self.adapter_url_edit.setText(str(tiku_defaults.get("url", "") or ""))
+        self.adapter_url_edit.clear()
         self.true_list_edit.setText(join_csv(DEFAULT_PROFILE["tiku"]["true_list"]))
         self.false_list_edit.setText(join_csv(DEFAULT_PROFILE["tiku"]["false_list"]))
         self.provider_chip_panel.set_selected([])
@@ -1626,12 +1676,15 @@ class ProfileEditorPanel(QWidget):
         self.cookies_path_edit.setText(str(common.get("cookies_path", "")))
         self.cache_path_edit.setText(str(common.get("cache_path", "")))
 
-        provider = str(tiku.get("provider", "TikuYanxi") or "TikuYanxi")
-        selected_providers = list(tiku.get("providers", []) or [])
+        provider = normalize_provider_value(tiku.get("provider", "TikuYanxi"), "TikuYanxi")
+        selected_providers = normalize_provider_list(tiku.get("providers", []) or [])
         if not selected_providers and provider in COLLAB_PROVIDER_OPTIONS:
             selected_providers = [provider]
-        set_combo_text(self.provider_combo, provider if provider in PROVIDER_OPTIONS else "TikuYanxi")
-        set_combo_text(self.decision_provider_combo, str(tiku.get("decision_provider", "SiliconFlow") or "SiliconFlow"))
+        set_combo_data(self.provider_combo, provider if provider in PROVIDER_OPTIONS else "TikuYanxi")
+        set_combo_data(
+            self.decision_provider_combo,
+            normalize_provider_value(tiku.get("decision_provider", "SiliconFlow"), "SiliconFlow"),
+        )
         self.check_connection_check.setChecked(bool(tiku.get("check_llm_connection", True)))
         self.submit_check.setChecked(bool(tiku.get("submit", False)))
         self.cover_rate_spin.setValue(config_float(tiku.get("cover_rate", 0.9), 0.9))
@@ -1786,7 +1839,7 @@ class ProfileEditorPanel(QWidget):
         common["notopen_action"] = get_notopen_action(self.notopen_combo)
 
         selected_providers = self.provider_chip_panel.selected_values()
-        provider_value = self.provider_combo.currentText().strip() or "TikuYanxi"
+        provider_value = get_combo_data(self.provider_combo, "TikuYanxi")
         if len(selected_providers) > 1:
             tiku["provider"] = "MultiTiku"
             tiku["providers"] = selected_providers
@@ -1797,7 +1850,7 @@ class ProfileEditorPanel(QWidget):
             tiku["provider"] = provider_value
             tiku["providers"] = []
 
-        tiku["decision_provider"] = self.decision_provider_combo.currentText().strip() or "SiliconFlow"
+        tiku["decision_provider"] = get_combo_data(self.decision_provider_combo, "SiliconFlow")
         tiku["check_llm_connection"] = self.check_connection_check.isChecked()
         tiku["submit"] = self.submit_check.isChecked()
         tiku["cover_rate"] = round(float(self.cover_rate_spin.value()), 2)
@@ -2007,7 +2060,7 @@ class ProfileEditorPanel(QWidget):
     def _on_provider_combo_changed(self, _value: str) -> None:
         if self._loading:
             return
-        provider = self.provider_combo.currentText().strip()
+        provider = get_combo_data(self.provider_combo, "TikuYanxi")
         if provider and provider != "MultiTiku":
             self.provider_chip_panel.set_selected([provider] if provider in COLLAB_PROVIDER_OPTIONS else [])
         self._update_provider_summary()
@@ -2018,23 +2071,23 @@ class ProfileEditorPanel(QWidget):
             return
         selected = self.provider_chip_panel.selected_values()
         if len(selected) > 1:
-            set_combo_text(self.provider_combo, "MultiTiku")
+            set_combo_data(self.provider_combo, "MultiTiku")
         elif len(selected) == 1:
-            set_combo_text(self.provider_combo, selected[0])
+            set_combo_data(self.provider_combo, selected[0])
         self._update_provider_summary()
         self._mark_dirty()
 
     def _update_provider_summary(self) -> None:
         selected = self.provider_chip_panel.selected_values()
-        decision_provider = self.decision_provider_combo.currentText().strip() or "SiliconFlow"
+        decision_provider = provider_label(get_combo_data(self.decision_provider_combo, "SiliconFlow"))
         if len(selected) > 1:
             self.provider_summary.setText(
-                f"当前将以 MultiTiku 模式运行：{' + '.join(selected)}。答案冲突时由 {decision_provider} 进行复核。"
+                f"当前将以多题库协同模式运行：{' + '.join(provider_label(item) for item in selected)}。答案冲突时由 {decision_provider} 进行复核。"
             )
         elif len(selected) == 1:
-            self.provider_summary.setText(f"当前题库：{selected[0]}。")
+            self.provider_summary.setText(f"当前题库：{provider_label(selected[0])}。")
         else:
-            self.provider_summary.setText(f"当前题库：{self.provider_combo.currentText().strip() or 'TikuYanxi'}。")
+            self.provider_summary.setText(f"当前题库：{provider_label(get_combo_data(self.provider_combo, 'TikuYanxi'))}。")
 
     def _mark_dirty(self, *_args) -> None:
         if self._loading or not self._current_profile_name:
@@ -2214,7 +2267,11 @@ class ProfilesPage(PageFrame):
     def _summary_text(self, profile_name: str) -> str:
         summary = profile_summary(load_json_profile(profile_name))
         providers = summary.get("providers", []) or []
-        provider_text = " + ".join(providers) if len(providers) > 1 else summary.get("provider", "未配置")
+        provider_text = (
+            " + ".join(provider_label(item) for item in providers)
+            if len(providers) > 1
+            else provider_label(summary.get("provider", ""))
+        )
         return f"题库：{provider_text} | 课程：{summary.get('course_count', 0)}"
 
     def _set_current_profile(self, profile_name: str) -> None:
@@ -2509,7 +2566,7 @@ class GlobalSettingsPage(PageFrame):
         self.like_vision_check = CheckBox("LIKE 启用视觉识图", self.tiku_card)
         self.like_retry_check = CheckBox("LIKE 失败自动重试", self.tiku_card)
         self.adapter_url_edit = LineEdit(self.tiku_card)
-        self.adapter_url_edit.setPlaceholderText("TikuAdapter 地址")
+        self.adapter_url_edit.setPlaceholderText("输入默认荷花题库地址；TikuAdapter 也可复用此地址")
 
         grid.addWidget(make_field("令牌列表", self.tokens_edit), 0, 0, 1, 2)
         grid.addWidget(make_field("AI 接口地址", self.ai_endpoint_edit), 1, 0)
@@ -2526,7 +2583,7 @@ class GlobalSettingsPage(PageFrame):
         grid.addWidget(self.like_search_check, 7, 0)
         grid.addWidget(self.like_vision_check, 7, 1)
         grid.addWidget(self.like_retry_check, 8, 0)
-        grid.addWidget(make_field("TikuAdapter 地址", self.adapter_url_edit), 9, 0, 1, 2)
+        grid.addWidget(make_field("荷花题库地址", self.adapter_url_edit), 9, 0, 1, 2)
         self.tiku_card.body_layout.addLayout(grid)
         self.scroll_layout.addWidget(self.tiku_card)
 
@@ -2762,7 +2819,11 @@ class LogCard(CardWidget):
             runtime_info = "尚未启动"
 
         providers = summary.get("providers", []) or []
-        provider_text = " + ".join(providers) if len(providers) > 1 else summary.get("provider", "未配置")
+        provider_text = (
+            " + ".join(provider_label(item) for item in providers)
+            if len(providers) > 1
+            else provider_label(summary.get("provider", ""))
+        )
         self.status_label.setText(status)
         self.meta_label.setText(
             f"题库：{provider_text}\n课程数量：{summary.get('course_count', 0)}\n{runtime_info}"

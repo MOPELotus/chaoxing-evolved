@@ -25,7 +25,7 @@ from api.runtime import get_runtime_context
 # 关闭警告
 disable_warnings(exceptions.InsecureRequestWarning)
 
-__all__ = ["CacheDAO", "Tiku", "TikuYanxi", "TikuLike", "TikuAdapter", "AI", "SiliconFlow", "MultiTiku"]
+__all__ = ["CacheDAO", "Tiku", "TikuYanxi", "TikuLike", "TikuAdapter", "HehuaTiku", "AI", "SiliconFlow", "MultiTiku"]
 
 IMG_TAG_PATTERN = re.compile(r'<img\b[^>]*?\bsrc=["\']([^"\']+)["\'][^>]*>', re.IGNORECASE)
 HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
@@ -952,6 +952,74 @@ class TikuAdapter(Tiku):
     def _init_tiku(self):
         # self.load_token()
         self.api = self._conf['url']
+
+
+class HehuaTiku(Tiku):
+    def __init__(self) -> None:
+        super().__init__()
+        self.name = "荷花题库"
+        self.api = ""
+        self._timeout = 60
+
+    def _init_tiku(self) -> None:
+        self.api = str(self._conf.get("url", "") or "").strip()
+        if not self.api:
+            logger.error(f"{self.name}未配置地址，已忽略该题库")
+            self.DISABLE = True
+            return
+
+        timeout_value = self._conf.get("request_timeout_seconds", 60)
+        try:
+            self._timeout = max(10, int(timeout_value))
+        except (TypeError, ValueError):
+            self._timeout = 60
+
+    def _query(self, q_info: dict):
+        options = q_info.get("options", "")
+        if isinstance(options, list):
+            options = "\n".join(str(item) for item in options)
+
+        try:
+            response = requests.post(
+                self.api,
+                json={
+                    "title": q_info.get("title", ""),
+                    "options": str(options),
+                    "type": q_info.get("type", ""),
+                },
+                headers={"Content-Type": "application/json"},
+                timeout=self._timeout,
+                verify=False,
+            )
+        except requests.RequestException as exc:
+            logger.error(f"{self.name}查询异常: {exc}")
+            return None
+
+        if response.status_code != 200:
+            logger.error(f"{self.name}查询失败: HTTP {response.status_code} -> {response.text[:500]}")
+            return None
+
+        try:
+            payload = response.json()
+        except ValueError:
+            logger.error(f"{self.name}响应解析失败: 返回内容不是有效 JSON")
+            return None
+
+        try:
+            answer = payload["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            logger.error(f"{self.name}响应结构不符合预期: {payload}")
+            return None
+
+        if isinstance(answer, list):
+            answer = "".join(
+                str(part.get("text", ""))
+                for part in answer
+                if isinstance(part, dict)
+            )
+
+        answer_text = str(answer or "").strip()
+        return answer_text or None
 
 
 class MultiTiku(Tiku):
