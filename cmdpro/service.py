@@ -28,6 +28,7 @@ from api.provider_catalog import (
     provider_items,
 )
 from api.runtime import configure_runtime
+from api.task_center import list_profile_tasks
 from cmdpro.state import (
     build_run_log_path,
     get_run_record,
@@ -280,3 +281,6 @@ def read_log(name: str, lines: int = 30) -> dict[str, Any]:
         "lines": _tail_lines(log_path, max(1, lines)),
     }
 
+
+def list_tasks_view(name: str, include_finished: bool = False) -> dict[str, Any]:
+    return list_profile_tasks(name, include_finished=include_finished)

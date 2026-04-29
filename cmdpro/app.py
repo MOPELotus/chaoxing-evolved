@@ -6,6 +6,7 @@ import shlex
 import subprocess
 import sys
 import time
+import webbrowser
 from pathlib import Path
 from typing import Any
 
@@ -263,6 +264,21 @@ def select_profile_by_index(profiles: list[dict[str, Any]], raw: str) -> dict[st
     return None
 
 
+def parse_indices(raw: str, upper_bound: int) -> list[int]:
+    indices: list[int] = []
+    for part in raw.split(","):
+        piece = part.strip()
+        if not piece:
+            continue
+        try:
+            index = int(piece)
+        except ValueError:
+            continue
+        if 1 <= index <= upper_bound and index not in indices:
+            indices.append(index)
+    return indices
+
+
 def open_new_console(mode: str, name: str | None = None) -> None:
     args = [sys.executable, str(CMD_PRO_ENTRY), "--mode", mode]
     if name:
@@ -291,6 +307,49 @@ def open_file_in_editor(path: Path) -> None:
         return
 
     print(f"请手动打开文件：{resolved}")
+
+
+def open_url(url: str) -> None:
+    target = str(url or "").strip()
+    if not target:
+        return
+    if os.name == "nt":
+        subprocess.Popen(["cmd", "/c", "start", "", target], cwd=PROJECT_ROOT)
+        return
+    webbrowser.open(target, new=2)
+
+
+def task_status_text(task: dict[str, Any]) -> str:
+    if task.get("finished"):
+        return "已完成"
+    if task.get("expired"):
+        return "已结束"
+    return str(task.get("status", "") or "待处理")
+
+
+def task_signature(task: dict[str, Any]) -> str:
+    return "|".join(
+        [
+            str(task.get("task_kind", "") or ""),
+            str(task.get("task_id", "") or ""),
+            str(task.get("course_id", "") or ""),
+            str(task.get("clazz_id", "") or ""),
+            str(task.get("title", "") or ""),
+        ]
+    )
+
+
+def print_task_lines(tasks: list[dict[str, Any]]) -> None:
+    if not tasks:
+        print("当前没有待处理任务。")
+        return
+    for index, task in enumerate(tasks, start=1):
+        course = str(task.get("course", "") or "未识别课程")
+        info = str(task.get("info", "") or "-")
+        print(
+            f"{index:>2}. [{task.get('task_type', '')}] {task.get('title', '')} | "
+            f"{course} | {task_status_text(task)} | {info}"
+        )
 
 
 def print_header(title: str, note: str | None = None) -> None:
@@ -363,6 +422,8 @@ def launcher_mode() -> int:
         print("  s 3 启动第 3 个配置并打开实时日志")
         print("  x 3 停止第 3 个配置")
         print("  l 3 打开第 3 个配置的日志窗口")
+        print("  t 3 打开第 3 个配置的任务中心")
+        print("  w 3 打开第 3 个配置的任务监控")
         print("  q   退出")
         print()
 
@@ -395,7 +456,7 @@ def launcher_mode() -> int:
             continue
 
         parts = lower.split(maxsplit=1)
-        if len(parts) == 2 and parts[0] in {"e", "s", "x", "l"}:
+        if len(parts) == 2 and parts[0] in {"e", "s", "x", "l", "t", "w"}:
             target = select_profile_by_index(profiles, parts[1])
             if not target:
                 print("未找到对应编号。")
@@ -412,6 +473,10 @@ def launcher_mode() -> int:
                     service.stop_run(name)
                 elif parts[0] == "l":
                     open_new_console("log", name)
+                elif parts[0] == "t":
+                    open_new_console("tasks", name)
+                elif parts[0] == "w":
+                    open_new_console("watch-tasks", name)
             except Exception as exc:
                 print(f"操作失败：{exc}")
                 pause()
@@ -430,6 +495,8 @@ def profiles_mode() -> int:
         print("  s 2           启动第 2 个配置并打开日志")
         print("  x 2           停止第 2 个配置")
         print("  l 2           打开第 2 个配置的实时日志")
+        print("  t 2           打开第 2 个配置的任务中心")
+        print("  w 2           打开第 2 个配置的任务监控")
         print("  d 2           删除第 2 个配置")
         print("  o             打开全局设置窗口")
         print("  r             刷新列表")
@@ -458,7 +525,7 @@ def profiles_mode() -> int:
             continue
 
         parts = command.split(maxsplit=1)
-        if len(parts) != 2 or parts[0] not in {"e", "s", "x", "l", "d"}:
+        if len(parts) != 2 or parts[0] not in {"e", "s", "x", "l", "t", "w", "d"}:
             print("命令格式不正确。")
             pause()
             continue
@@ -480,6 +547,10 @@ def profiles_mode() -> int:
                 service.stop_run(name)
             elif parts[0] == "l":
                 open_new_console("log", name)
+            elif parts[0] == "t":
+                open_new_console("tasks", name)
+            elif parts[0] == "w":
+                open_new_console("watch-tasks", name)
             elif parts[0] == "d":
                 if prompt_bool(f"确认删除配置 {name}", False):
                     service.remove_profile(name, force=True)
@@ -684,6 +755,8 @@ def edit_profile_window(name: str) -> int:
         print(" 7  启动当前配置并打开日志")
         print(" 8  停止当前配置")
         print(" 9  打开实时日志窗口")
+        print("10  打开任务中心")
+        print("11  打开任务监控")
         print(" 0  关闭窗口")
         print()
 
@@ -710,6 +783,10 @@ def edit_profile_window(name: str) -> int:
                 service.stop_run(name)
             elif command == "9":
                 open_new_console("log", name)
+            elif command == "10":
+                open_new_console("tasks", name)
+            elif command == "11":
+                open_new_console("watch-tasks", name)
         except Exception as exc:
             print(f"操作失败：{exc}")
             pause()
@@ -840,6 +917,107 @@ def runs_mode() -> int:
             pause()
 
 
+def tasks_mode(name: str) -> int:
+    set_console_title(f"超星助手 命令行 Pro - 任务中心 - {name}")
+    include_finished = False
+    while True:
+        try:
+            payload = service.list_tasks_view(name, include_finished=include_finished)
+        except Exception as exc:
+            print_header("任务中心", f"档案：{name}")
+            print(f"读取任务失败：{exc}")
+            pause()
+            return 1
+
+        tasks = list(payload.get("pending" if not include_finished else "homeworks", []) or [])
+        if include_finished:
+            tasks = []
+            for group in ("homeworks", "exams", "activities"):
+                tasks.extend(list(payload.get(group, []) or []))
+
+        summary = payload.get("summary", {})
+        print_header("任务中心", f"档案：{name}")
+        print(
+            f"待处理 {summary.get('pending_count', 0)} 项 | "
+            f"作业 {summary.get('homework_count', 0)} | "
+            f"考试 {summary.get('exam_count', 0)} | "
+            f"课程任务 {summary.get('activity_count', 0)}"
+        )
+        print()
+        print_task_lines(tasks)
+        print()
+        print("命令：")
+        print("  o 1,3   打开选中任务页")
+        print("  c 1,3   打开选中任务对应课程")
+        print("  a       切换显示全部/仅待处理")
+        print("  w       打开任务监控窗口")
+        print("  r       刷新")
+        print("  q       关闭窗口")
+        print()
+        command = input("请输入命令: ").strip().lower()
+        if command in {"q", "quit", "exit"}:
+            return 0
+        if command in {"", "r"}:
+            continue
+        if command == "a":
+            include_finished = not include_finished
+            continue
+        if command == "w":
+            open_new_console("watch-tasks", name)
+            continue
+        parts = command.split(maxsplit=1)
+        if len(parts) != 2 or parts[0] not in {"o", "c"}:
+            continue
+        indices = parse_indices(parts[1], len(tasks))
+        if not indices:
+            print("未找到有效编号。")
+            pause()
+            continue
+        for index in indices:
+            task = tasks[index - 1]
+            url = task.get("open_url") if parts[0] == "o" else task.get("course_open_url")
+            if url:
+                open_url(str(url))
+
+
+def watch_tasks_mode(name: str) -> int:
+    set_console_title(f"超星助手 命令行 Pro - 任务监控 - {name}")
+    interval_seconds = prompt_int("轮询间隔（秒）", 60, 10)
+    auto_open = prompt_bool("检测到新任务时自动打开任务页", False)
+    seen_signatures: set[str] = set()
+    first_round = True
+
+    while True:
+        payload = service.list_tasks_view(name, include_finished=False)
+        pending = list(payload.get("pending", []) or [])
+        current_signatures = {task_signature(task) for task in pending}
+
+        print_header("任务监控", f"档案：{name} | 轮询间隔：{interval_seconds} 秒")
+        print(f"当前待处理任务：{len(pending)}")
+        print_task_lines(pending[:12])
+        if len(pending) > 12:
+            print(f"... 其余 {len(pending) - 12} 项请在任务中心查看。")
+        print()
+
+        if first_round:
+            print("监控已启动。按 Ctrl+C 关闭窗口。")
+            first_round = False
+        else:
+            new_tasks = [task for task in pending if task_signature(task) not in seen_signatures]
+            if new_tasks:
+                print("检测到新的待处理任务：")
+                print_task_lines(new_tasks)
+                if auto_open:
+                    for task in new_tasks:
+                        if task.get("open_url"):
+                            open_url(str(task["open_url"]))
+            else:
+                print("本轮未发现新的待处理任务。")
+
+        seen_signatures = current_signatures
+        time.sleep(interval_seconds)
+
+
 def log_mode(name: str) -> int:
     set_console_title(f"超星助手 命令行 Pro - 实时日志 - {name}")
     last_snapshot: list[str] = []
@@ -873,7 +1051,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--mode",
         default="launcher",
-        choices=["launcher", "profiles", "global", "runs", "edit-profile", "log", "worker-host"],
+        choices=["launcher", "profiles", "global", "runs", "tasks", "watch-tasks", "edit-profile", "log", "worker-host"],
         help="Window mode",
     )
     parser.add_argument("--name", help="Profile name for profile-specific modes")
@@ -898,6 +1076,14 @@ def main(argv: list[str] | None = None) -> int:
         return global_mode()
     if args.mode == "runs":
         return runs_mode()
+    if args.mode == "tasks":
+        if not args.name:
+            parser.error("--name is required for --mode tasks")
+        return tasks_mode(args.name)
+    if args.mode == "watch-tasks":
+        if not args.name:
+            parser.error("--name is required for --mode watch-tasks")
+        return watch_tasks_mode(args.name)
     if args.mode == "edit-profile":
         if not args.name:
             parser.error("--name is required for --mode edit-profile")

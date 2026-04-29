@@ -80,6 +80,10 @@ def command_read_log(args: argparse.Namespace) -> int:
     return print_json(service.read_log(args.name, lines=args.lines))
 
 
+def command_list_tasks(args: argparse.Namespace) -> int:
+    return print_json(service.list_tasks_view(args.name, include_finished=args.include_finished))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Chaoxing command line Pro backend bridge.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -123,6 +127,11 @@ def build_parser() -> argparse.ArgumentParser:
     read_log.add_argument("--name", required=True)
     read_log.add_argument("--lines", type=int, default=30)
     read_log.set_defaults(func=command_read_log)
+
+    list_tasks = subparsers.add_parser("list-tasks")
+    list_tasks.add_argument("--name", required=True)
+    list_tasks.add_argument("--include-finished", action="store_true")
+    list_tasks.set_defaults(func=command_list_tasks)
     return parser
 
 
@@ -138,4 +147,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
