@@ -25,7 +25,7 @@ from api.runtime import get_runtime_context
 # 关闭警告
 disable_warnings(exceptions.InsecureRequestWarning)
 
-__all__ = ["CacheDAO", "Tiku", "TikuYanxi", "TikuLike", "TikuAdapter", "HehuaTiku", "AI", "SiliconFlow", "MultiTiku"]
+__all__ = ["CacheDAO", "Tiku", "TikuYanxi", "TikuLike", "TikuAdapter", "LotusTiKu", "AI", "SiliconFlow", "MultiTiku"]
 
 IMG_TAG_PATTERN = re.compile(r'<img\b[^>]*?\bsrc=["\']([^"\']+)["\'][^>]*>', re.IGNORECASE)
 HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
@@ -954,7 +954,7 @@ class TikuAdapter(Tiku):
         self.api = self._conf['url']
 
 
-class HehuaTiku(Tiku):
+class LotusTiKu(Tiku):
     def __init__(self) -> None:
         super().__init__()
         self.name = "荷花题库"
