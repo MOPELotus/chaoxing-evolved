@@ -6,13 +6,13 @@ TIKU_PROVIDER_LABELS = {
     "AI": "AI 大模型",
     "TikuLike": "LIKE 知识库",
     "TikuAdapter": "TikuAdapter",
-    "HehuaTiku": "荷花题库",
+    "LotusTiKu": "荷花题库",
     "MultiTiku": "多题库协同",
 }
 
-PROVIDER_OPTIONS = ["TikuYanxi", "SiliconFlow", "AI", "TikuLike", "TikuAdapter", "HehuaTiku", "MultiTiku"]
-COLLAB_PROVIDER_OPTIONS = ["TikuYanxi", "SiliconFlow", "AI", "TikuLike", "TikuAdapter", "HehuaTiku"]
-DECISION_PROVIDER_OPTIONS = ["SiliconFlow", "AI", "TikuYanxi", "TikuLike", "TikuAdapter", "HehuaTiku"]
+PROVIDER_OPTIONS = ["TikuYanxi", "SiliconFlow", "AI", "TikuLike", "TikuAdapter", "LotusTiKu", "MultiTiku"]
+COLLAB_PROVIDER_OPTIONS = ["TikuYanxi", "SiliconFlow", "AI", "TikuLike", "TikuAdapter", "LotusTiKu"]
+DECISION_PROVIDER_OPTIONS = ["SiliconFlow", "AI", "TikuYanxi", "TikuLike", "TikuAdapter", "LotusTiKu"]
 
 PROVIDER_VALUE_BY_LABEL = {label: value for value, label in TIKU_PROVIDER_LABELS.items()}
 
@@ -28,4 +28,3 @@ def provider_from_label(label: str, default: str = "TikuYanxi") -> str:
 def provider_items(values: list[str] | None = None) -> list[tuple[str, str]]:
     sequence = values or PROVIDER_OPTIONS
     return [(value, provider_label(value)) for value in sequence]
-
