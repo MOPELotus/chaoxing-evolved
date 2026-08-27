@@ -1092,6 +1092,10 @@ class ProfileEditorPanel(QWidget):
         self.cookies_path_edit.setPlaceholderText("留空时自动使用当前配置的独立 Cookies 文件")
         self.cache_path_edit = LineEdit(self.common_card)
         self.cache_path_edit.setPlaceholderText("留空时自动使用当前配置的独立缓存文件")
+        self.add_learning_count_check = CheckBox("刷课后增加章节学习次数", self.common_card)
+        self.target_count_spin = SpinBox(self.common_card)
+        self.target_count_spin.setRange(0, 100000)
+        self.target_count_spin.setValue(100)
 
         common_grid.addWidget(self.use_cookies_check, 0, 0, 1, 2)
         common_grid.addWidget(make_field("账号", self.username_edit), 1, 0)
@@ -1101,6 +1105,8 @@ class ProfileEditorPanel(QWidget):
         common_grid.addWidget(make_field("关闭章节处理策略", self.notopen_combo), 3, 0)
         common_grid.addWidget(make_field("Cookies 路径", self.cookies_path_edit), 4, 0)
         common_grid.addWidget(make_field("Cache 路径", self.cache_path_edit), 4, 1)
+        common_grid.addWidget(self.add_learning_count_check, 5, 0)
+        common_grid.addWidget(make_field("目标学习次数", self.target_count_spin), 5, 1)
         self.common_card.body_layout.addLayout(common_grid)
         self.scroll_layout.addWidget(self.common_card)
 
@@ -1113,6 +1119,8 @@ class ProfileEditorPanel(QWidget):
             self.notopen_combo,
             self.cookies_path_edit,
             self.cache_path_edit,
+            self.add_learning_count_check,
+            self.target_count_spin,
         )
 
     def _create_override_check(self, section: str, key: str, widget: QWidget, parent: QWidget) -> CheckBox:
@@ -1545,6 +1553,8 @@ class ProfileEditorPanel(QWidget):
         set_notopen_action(self.notopen_combo, "retry")
         self.cookies_path_edit.clear()
         self.cache_path_edit.clear()
+        self.add_learning_count_check.setChecked(False)
+        self.target_count_spin.setValue(100)
 
         set_combo_text(self.provider_combo, "TikuYanxi")
         set_combo_text(self.decision_provider_combo, "SiliconFlow")
@@ -1625,6 +1635,8 @@ class ProfileEditorPanel(QWidget):
         set_notopen_action(self.notopen_combo, str(common.get("notopen_action", "retry") or "retry"))
         self.cookies_path_edit.setText(str(common.get("cookies_path", "")))
         self.cache_path_edit.setText(str(common.get("cache_path", "")))
+        self.add_learning_count_check.setChecked(bool(common.get("add_learning_count", False)))
+        self.target_count_spin.setValue(config_int(common.get("target_count", 100), 100))
 
         provider = str(tiku.get("provider", "TikuYanxi") or "TikuYanxi")
         selected_providers = list(tiku.get("providers", []) or [])
@@ -1784,6 +1796,8 @@ class ProfileEditorPanel(QWidget):
         common["speed"] = round(float(self.speed_spin.value()), 2)
         common["jobs"] = int(self.jobs_spin.value())
         common["notopen_action"] = get_notopen_action(self.notopen_combo)
+        common["add_learning_count"] = self.add_learning_count_check.isChecked()
+        common["target_count"] = int(self.target_count_spin.value())
 
         selected_providers = self.provider_chip_panel.selected_values()
         provider_value = self.provider_combo.currentText().strip() or "TikuYanxi"

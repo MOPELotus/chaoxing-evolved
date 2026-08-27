@@ -120,6 +120,8 @@ DEFAULT_PROFILE = {
         "speed": 1.0,
         "jobs": 4,
         "notopen_action": "retry",
+        "add_learning_count": False,
+        "target_count": 100,
     },
     "tiku": {
         "provider": "TikuYanxi",

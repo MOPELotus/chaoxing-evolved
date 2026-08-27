@@ -320,6 +320,12 @@ def process_course(chaoxing: Chaoxing, course: dict[str, Any], config: dict[str,
 
     processor = JobProcessor(chaoxing, course, tasks, config)
     processor.run()
+    if to_bool(config.get("add_learning_count", False)):
+        target_count = max(0, int(config.get("target_count", 100) or 100))
+        logger.info(f"开始增加课程章节学习次数，目标总次数: {target_count}")
+        result = chaoxing.increase_chapter_learning_count(course, point_list["points"], target_count)
+        if result.is_failure():
+            raise RuntimeError(f"课程 [{course['title']}] 章节学习次数增加失败")
     tqdm.format_sizeof = old_format_sizeof
 
 
