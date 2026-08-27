@@ -203,6 +203,7 @@ class Bark(NotificationService):
             logger.error(f"Bark 通知发送失败: {exc}")
 
 
+
 class Telegram(NotificationService):
     def _init_service(self) -> None:
         if not self._conf or not self._conf.get("url") or not self._conf.get("tg_chat_id"):

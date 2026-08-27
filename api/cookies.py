@@ -4,6 +4,9 @@ import requests
 
 from api.runtime import get_runtime_context
 
+# 定义全局 Cookie 文件锁，保证读写绝对安全
+cookie_lock = threading.RLock()
+
 
 def save_cookies(session: requests.Session):
     cookies_path = get_runtime_context().cookies_path
@@ -14,7 +17,8 @@ def save_cookies(session: requests.Session):
         for k, v in session.cookies.items():
             buffer += f"{k}={v};"
         buffer = buffer.removesuffix(";")
-        f.write(buffer)
+        with open(gc.COOKIES_PATH, "w") as f:
+            f.write(buffer)
 
 
 def use_cookies() -> dict:
@@ -31,4 +35,4 @@ def use_cookies() -> dict:
             k, v = item.strip().split("=", 1)
             cookies[k] = v
 
-    return cookies
+        return cookies
