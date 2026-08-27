@@ -1,4 +1,5 @@
 import base64
+import configparser
 import json
 import mimetypes
 import os
@@ -337,12 +338,13 @@ class CacheDAO:
 
 # TODO: 重构此部分代码，将此类改为抽象类，加载题库方法改为静态方法，禁止直接初始化此类
 class Tiku:
+    CONFIG_PATH = os.path.join(os.getcwd(), "config.ini")
     DISABLE = False     # 停用标志
     SUBMIT = False      # 提交标志
     COVER_RATE = 0.8    # 覆盖率
     true_list = []
     false_list = []
-    def __init__(self) -> None:
+    def __init__(self, config_path: Optional[str] = None) -> None:
         self._name = None
         self._api = None
         self._conf = None
@@ -395,6 +397,30 @@ class Tiku:
 
     def config_set(self, config):
         self._conf = config
+
+    def _get_conf(self):
+        try:
+            parser = configparser.ConfigParser()
+            parser.read(self._config_path, encoding="utf8")
+            return parser["tiku"]
+        except (KeyError, FileNotFoundError):
+            self.DISABLE = True
+            logger.info("未找到tiku配置, 已忽略题库功能")
+            return None
+
+    @property
+    def _is_manual_mode(self) -> bool:
+        return bool(
+            getattr(self, "is_manual", False)
+            or self.__class__.__name__ == "TikuManual"
+            or (
+                self.__class__.__name__ == "TikuFallback"
+                and any(
+                    getattr(p, "is_manual", False) or p.__class__.__name__ == "TikuManual"
+                    for p in getattr(self, "providers", [])
+                )
+            )
+        )
 
     def _normalize_question_info(self, q_info: dict) -> dict:
         normalized_q_info = dict(q_info)
@@ -458,6 +484,9 @@ class Tiku:
             return None
         return self._query_validated(self._normalize_question_info(q_info))
 
+    def query_all(self, q_list: list[dict], query_delay: float = 0.0) -> list[Optional[str]]:
+        if self.DISABLE:
+            return [None] * len(q_list)
 
         results = [None] * len(q_list)
         pending_indices = []
@@ -532,35 +561,35 @@ class Tiku:
                 results.append(None)
         return results
 
-    @staticmethod
     def get_tiku_from_config(config: Optional[dict] = None, config_path: Optional[str] = None):
         """
         从配置文件加载题库, 这个配置可以是用户提供, 可以是默认配置文件
         """
-        if not self._conf:
-            self.DISABLE = True
-            logger.error("未找到题库配置, 已忽略题库功能")
-        if self.DISABLE:
-            return self
+        conf = config or self._conf
+        path = config_path or self._config_path
+        if not conf:
+            conf = self._get_conf()
+        if not conf or self.DISABLE:
+            return DummyTiku(config_path=path)
         try:
-            config = dict(self._conf)
+            config = dict(conf)
             cls_name = config['provider'].strip()
             if not cls_name:
                 raise KeyError
         except KeyError:
             logger.error("未找到题库配置, 已忽略题库功能")
-            return self
+            return DummyTiku(config_path=path)
 
         provider_names = parse_provider_names(config.get("providers") or cls_name)
         if len(provider_names) > 1 or cls_name in {"MultiTiku", "CompositeTiku"}:
             if provider_names:
                 config["providers"] = ",".join(provider_names)
-            new_cls = MultiTiku()
+            new_cls = MultiTiku(config_path=path)
             new_cls.config_set(config)
             return new_cls
 
         # FIXME: Implement using StrEnum instead. This is not only buggy but also not safe
-        new_cls = globals()[provider_names[0] if provider_names else cls_name]()
+        new_cls = globals()[provider_names[0] if provider_names else cls_name](config_path=path)
         new_cls.config_set(config)
         return new_cls
 

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import requests
+import threading
 
 from api.runtime import get_runtime_context
 
@@ -12,13 +13,9 @@ def save_cookies(session: requests.Session):
     cookies_path = get_runtime_context().cookies_path
     cookies_path.parent.mkdir(parents=True, exist_ok=True)
 
-    buffer = ""
-    with cookies_path.open("w", encoding="utf8") as f:
-        for k, v in session.cookies.items():
-            buffer += f"{k}={v};"
-        buffer = buffer.removesuffix(";")
-        with open(gc.COOKIES_PATH, "w") as f:
-            f.write(buffer)
+    with cookie_lock:
+        buffer = ";".join(f"{k}={v}" for k, v in session.cookies.items())
+        cookies_path.write_text(buffer, encoding="utf8")
 
 
 def use_cookies() -> dict:
