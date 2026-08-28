@@ -5,7 +5,6 @@ import math
 import threading
 import time
 import traceback
-from concurrent.futures.thread import ThreadPoolExecutor
 from dataclasses import dataclass
 from queue import PriorityQueue, ShutDown
 from threading import RLock
@@ -53,6 +52,16 @@ def to_bool(value: object) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def is_challenge_point(point: dict[str, Any]) -> bool:
+    challenge_values = {
+        "1", "true", "yes", "challenge", "challenge_mode", "闯关", "挑战"
+    }
+    return any(
+        str(point.get(key, "")).strip().lower() in challenge_values
+        for key in ("challenge", "isChallenge", "challengeMode", "闯关", "挑战")
+    )
 
 
 def _normalize_common_config(section: dict[str, Any]) -> dict[str, Any]:
@@ -208,7 +217,10 @@ class JobProcessor:
         self.chaoxing = chaoxing
         self.course = course
         self.speed = config["speed"]
-        self.max_tries = max(1, min(3, int(config.get("challenge_retry_attempts", 3) or 3)))
+        self.normal_max_tries = 5
+        self.challenge_max_tries = max(
+            1, min(3, int(config.get("challenge_retry_attempts", 3) or 3))
+        )
         self.tasks = tasks
         self.failed_tasks: list[ChapterTask] = []
         self.abort_event = threading.Event()
@@ -221,11 +233,7 @@ class JobProcessor:
 
     @staticmethod
     def _is_challenge(point: dict[str, Any]) -> bool:
-        if point.get("challenge") is True:
-            return True
-        return str(point.get("challenge", "")).strip().lower() in {
-            "1", "true", "yes", "challenge", "challenge_mode", "闯关", "挑战"
-        }
+        return is_challenge_point(point)
 
     def run(self) -> None:
         for task in self.tasks:
@@ -256,10 +264,13 @@ class JobProcessor:
                 continue
 
             task.result = process_chapter(
-                self.chaoxing, self.course, task.point, self.speed, self.worker_num,
-                self.config.get("reading_duration_seconds", 0),
-                task.tries,
-                self.abort_event,
+                self.chaoxing,
+                self.course,
+                task.point,
+                self.speed,
+                reading_duration_seconds=self.config.get("reading_duration_seconds", 0),
+                challenge_attempt=task.tries,
+                abort_event=self.abort_event,
             )
 
             if self.abort_event.is_set() and task.result != ChapterResult.FATAL:
@@ -278,7 +289,7 @@ class JobProcessor:
                         self.task_queue.task_done()
                         continue
 
-                    if task.tries >= self.max_tries:
+                    if task.tries >= self.normal_max_tries:
                         logger.error(
                             "章节未开启: {} 可能由于上一章节的章节检测未完成，也可能由于章节已关闭，请手动检查后再试。",
                             task.point["title"],
@@ -290,18 +301,27 @@ class JobProcessor:
 
                 case ChapterResult.ERROR:
                     task.tries += 1
-                    retry_limit = self.max_tries if self._is_challenge(task.point) else 1
+                    retry_limit = (
+                        self.challenge_max_tries
+                        if self._is_challenge(task.point)
+                        else self.normal_max_tries
+                    )
+                    if task.tries >= retry_limit:
+                        logger.error(
+                            "任务失败，已达到重试上限: {} ({}/{} 次尝试)",
+                            task.point["title"],
+                            task.tries,
+                            retry_limit,
+                        )
+                        self.failed_tasks.append(task)
+                        self.task_queue.task_done()
+                        continue
                     logger.warning(
-                        "Retrying task {} ({}/{} attempts)",
+                        "任务失败，准备重试: {} ({}/{} 次尝试)",
                         task.point["title"],
                         task.tries,
                         retry_limit,
                     )
-                    if task.tries >= retry_limit:
-                        logger.error("Max retries reached for task: {}", task.point["title"])
-                        self.failed_tasks.append(task)
-                        self.task_queue.task_done()
-                        continue
                     self.retry_queue.put(task)
 
                 case ChapterResult.FATAL:
@@ -344,7 +364,6 @@ def process_chapter(
     course: dict[str, Any],
     point: dict[str, Any],
     speed: float,
-    max_workers: int = 5,
     reading_duration_seconds: int = 0,
     challenge_attempt: int = 0,
     abort_event: threading.Event | None = None,
@@ -374,25 +393,28 @@ def process_chapter(
         return ChapterResult.NOT_OPEN
 
     job_results: list[StudyResult] = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for result in executor.map(
-            lambda job: process_job(
-                chaoxing,
-                course,
-                job,
-                job_info,
-                speed,
-                reading_duration_seconds,
-                challenge_attempt,
-            ),
-            jobs,
-        ):
-            job_results.append(result)
-
-    skipped_result = any(result == StudyResult.SKIPPED for result in job_results)
-    for result in job_results:
+    for job in jobs:
+        if abort_event is not None and abort_event.is_set():
+            return ChapterResult.ERROR
+        result = process_job(
+            chaoxing,
+            course,
+            job,
+            job_info,
+            speed,
+            reading_duration_seconds,
+            challenge_attempt,
+        )
+        job_results.append(result)
         if result.is_failure():
             return ChapterResult.ERROR
+
+    skipped_result = any(result == StudyResult.SKIPPED for result in job_results)
+    requires_confirmation = is_challenge_point(point) or any(
+        job.get("type") == "live" for job in jobs
+    )
+    if not requires_confirmation:
+        return ChapterResult.SUCCESS
 
     try:
         fresh_points = chaoxing.get_course_point(
@@ -404,10 +426,7 @@ def process_chapter(
         )
         if fresh and fresh.get("has_finished"):
             return ChapterResult.SUCCESS
-        challenge = any(
-            str(point.get(key, "")).strip().lower() in {"1", "true", "yes", "challenge", "闯关", "挑战"}
-            for key in ("challenge", "isChallenge", "challengeMode", "闯关", "挑战")
-        )
+        challenge = is_challenge_point(point)
         if skipped_result:
             logger.info(
                 "章节包含已过期且不可提交的任务，平台不会将该卡片标记为完成；按跳过处理: {}",

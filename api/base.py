@@ -1005,6 +1005,11 @@ class Chaoxing:
         _url = f"https://mooc1.chaoxing.com/ananas/job/document?jobid={_job['jobid']}&knowledgeid={re.findall(r'nodeId_(.*?)-', _job['otherinfo'])[0]}&courseid={_course['courseId']}&clazzid={_course['clazzId']}&jtoken={_job['jtoken']}&_dc={get_timestamp()}"
         _resp = _session.get(_url)
         if _resp.status_code != 200:
+            logger.warning(
+                "文档任务提交失败: jobid={}, HTTP {}",
+                _job.get("jobid", ""),
+                _resp.status_code,
+            )
             return StudyResult.ERROR
         else:
             return StudyResult.SUCCESS
