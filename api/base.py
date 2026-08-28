@@ -790,10 +790,6 @@ class Chaoxing:
                 elif resp.status_code == 403:
                     logger.warning("出现403报错, 正常尝试切换rt")
                 else:
-                    logger.warning("未知错误 jobid={}, status_code={}, 摘要:\n{}",
-                                   _job.get("jobid"),
-                                   resp.status_code,
-                                   resp.text[:200])
                     break
 
         if resp.status_code == 200:
@@ -801,21 +797,19 @@ class Chaoxing:
             return resp.json()["isPassed"], 200
 
         elif resp.status_code == 403:
-            logger.debug(
-                "视频进度上报返回403, jobid={}, 摘要={}",
+            logger.warning(
+                "媒体进度上报被拒绝: jobid={}, media_type={}, HTTP 403",
                 _job.get("jobid"),
-                resp.text[:200],
+                _type,
             )
-
-            # 若出现两个rt参数都返回403的情况, 则跳过当前任务
-            logger.error("出现403报错, 尝试修复无效, 正在跳过当前任务点...")
-            logger.error("请求url: {}", resp.url)
-            logger.error("请求头: {}", dict(_session.headers) | headers)
             return False, 403
 
-        logger.error(f"未知错误: {resp.status_code}")
-        logger.error("请求url:", resp.url)
-        logger.error("请求头：", dict(_session.headers) | headers)
+        logger.warning(
+            "媒体进度上报失败: jobid={}, media_type={}, HTTP {}",
+            _job.get("jobid"),
+            _type,
+            resp.status_code,
+        )
         return False, resp.status_code
 
     def _refresh_video_status(self, session: requests.Session, job: dict, _type: Literal["Video", "Audio"]) \

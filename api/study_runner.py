@@ -64,6 +64,60 @@ def is_challenge_point(point: dict[str, Any]) -> bool:
     )
 
 
+_AUDIO_EXTENSIONS = {
+    ".aac",
+    ".amr",
+    ".flac",
+    ".m4a",
+    ".mp3",
+    ".oga",
+    ".ogg",
+    ".opus",
+    ".wav",
+    ".wma",
+}
+
+
+def is_audio_media_job(job: dict[str, Any]) -> bool:
+    """Prefer the audio endpoint when the card metadata clearly describes audio."""
+    property_data = job.get("property") if isinstance(job.get("property"), dict) else {}
+    names = (
+        job.get("name"),
+        job.get("title"),
+        job.get("filename"),
+        property_data.get("name"),
+        property_data.get("title"),
+        property_data.get("filename"),
+    )
+    for value in names:
+        normalized = str(value or "").split("?", 1)[0].split("#", 1)[0].strip().lower()
+        if any(normalized.endswith(extension) for extension in _AUDIO_EXTENSIONS):
+            return True
+
+    metadata_keys = (
+        "media_type",
+        "mediaType",
+        "mime",
+        "mime_type",
+        "mimeType",
+        "contentType",
+        "resource_type",
+        "resourceType",
+        "format",
+        "suffix",
+        "extension",
+        "ext",
+    )
+    for source in (job, property_data):
+        for key in metadata_keys:
+            normalized = str(source.get(key) or "").strip().lower()
+            if "audio" in normalized:
+                return True
+            if normalized and f".{normalized.lstrip('.')}" in _AUDIO_EXTENSIONS:
+                return True
+    return False
+
+
 def _normalize_common_config(section: dict[str, Any]) -> dict[str, Any]:
     course_list = section.get("course_list", []) or []
     if isinstance(course_list, str):
@@ -138,14 +192,30 @@ def process_job(
     challenge_attempt: int = 0,
 ) -> StudyResult:
     if job["type"] == "video":
-        logger.trace(f"识别到视频任务, 任务章节: {course['title']} 任务ID: {job['jobid']}")
-        video_result = chaoxing.study_video(course, job, job_info, _speed=speed, _type="Video")
-        if video_result.is_failure():
-            logger.warning("当前任务非视频任务, 正在尝试音频任务解码")
-            video_result = chaoxing.study_video(course, job, job_info, _speed=speed, _type="Audio")
-        if video_result.is_failure():
+        preferred_type = "Audio" if is_audio_media_job(job) else "Video"
+        fallback_type = "Video" if preferred_type == "Audio" else "Audio"
+        logger.trace(
+            "识别到{}任务, 任务章节: {} 任务ID: {}",
+            "音频" if preferred_type == "Audio" else "视频",
+            course["title"],
+            job["jobid"],
+        )
+        media_result = chaoxing.study_video(
+            course, job, job_info, _speed=speed, _type=preferred_type
+        )
+        if media_result.is_failure():
+            logger.warning(
+                "{}模式处理失败，正在尝试{}模式: {}",
+                preferred_type,
+                fallback_type,
+                job.get("name") or job.get("jobid", ""),
+            )
+            media_result = chaoxing.study_video(
+                course, job, job_info, _speed=speed, _type=fallback_type
+            )
+        if media_result.is_failure():
             logger.warning(f"出现异常任务 -> 任务章节: {course['title']} 任务ID: {job['jobid']}, 已跳过")
-        return video_result
+        return media_result
 
     if job["type"] == "document":
         logger.trace(f"识别到文档任务, 任务章节: {course['title']} 任务ID: {job['jobid']}")

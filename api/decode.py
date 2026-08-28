@@ -355,16 +355,21 @@ def _process_read_task(card: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 def _process_video_task(card: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """处理视频类型任务"""
     try:
+        property_data = card.get("property") if isinstance(card.get("property"), dict) else {}
         return {
             "type": "video",
             "jobid": card.get("jobid", ""),
-            "name": card.get("property", {}).get("name", ""),
+            "name": property_data.get("name", ""),
+            # Preserve media metadata so the runner can choose Audio/Video
+            # before making a progress request. Chaoxing labels audio cards
+            # as attachment type "video" as well.
+            "property": property_data,
             "otherinfo": card.get("otherInfo", ""),
             "mid": card["mid"],  # 必须字段，如果不存在会抛出异常
             "objectid": card.get("objectId", ""),
             "aid": card.get("aid", ""),
             "playTime": card.get("playTime", 0),
-            "rt": card.get("property", {}).get("rt", ""),
+            "rt": property_data.get("rt", ""),
             "attDuration": card.get("attDuration", ""),
             "attDurationEnc": card.get("attDurationEnc", ""),
             "videoFaceCaptureEnc": card.get("videoFaceCaptureEnc", ""),
