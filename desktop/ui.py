@@ -818,7 +818,7 @@ class HomePage(PageFrame):
             self.metrics_layout.setColumnStretch(index, 1)
         self.content_layout.addWidget(self.metrics_widget)
 
-        self.overview_header = SectionHeader("运行概况", "从整体视角查看题库分布与本地数据目录。", self.scroll_content)
+        self.overview_header = SectionHeader("运行概况", "从整体视角查看 AI 答题配置与本地数据目录。", self.scroll_content)
         self.content_layout.addWidget(self.overview_header)
 
         self.overview_widget = QWidget(self.scroll_content)
@@ -827,7 +827,7 @@ class HomePage(PageFrame):
         self.overview_layout.setHorizontalSpacing(14)
         self.overview_layout.setVerticalSpacing(14)
 
-        summary_card = SectionCard("题库分布", "快速确认当前配置所使用的题库构成。", parent=self.overview_widget)
+        summary_card = SectionCard("AI 答题配置", "快速确认当前配置的 Responses AI 使用情况。", parent=self.overview_widget)
         self.summary_label = BodyLabel(summary_card)
         self.summary_label.setWordWrap(True)
         summary_card.body_layout.addWidget(self.summary_label)
@@ -912,7 +912,7 @@ class HomePage(PageFrame):
 
         provider_count = len(providers)
         summary_lines = [
-            f"题库类型：{provider_count} 种",
+            f"AI 答题类型：{provider_count} 种",
             f"配置总数：{len(names)} 个",
             "",
             "分布明细：",
@@ -1160,7 +1160,7 @@ class ProfileEditorPanel(QWidget):
     def _build_tiku_card(self) -> None:
         self.tiku_card = SectionCard(
             "Responses AI",
-            "配置多个 AI 站点和模型；一次运行只选择一个站点、一个模型和一种思考强度。",
+            "配置当前使用的 Responses API、模型和思考强度。",
             self.scroll_content,
         )
         top_grid = QGridLayout()
@@ -1182,26 +1182,16 @@ class ProfileEditorPanel(QWidget):
         self.delay_spin.setDecimals(1)
         self.delay_spin.setSingleStep(0.5)
 
-        top_grid.addWidget(make_field("主题库", self.provider_combo), 0, 0)
-        top_grid.addWidget(make_field("冲突仲裁题库", self.decision_provider_combo), 0, 1)
-        top_grid.addWidget(make_field("最低覆盖率", self.cover_rate_spin), 1, 0)
-        top_grid.addWidget(make_field("单题间隔（秒）", self.delay_spin), 1, 1)
-        top_grid.addWidget(self.check_connection_check, 2, 0)
-        top_grid.addWidget(self.submit_check, 2, 1)
+        top_grid.addWidget(make_field("最低覆盖率", self.cover_rate_spin), 0, 0)
+        top_grid.addWidget(make_field("单题间隔（秒）", self.delay_spin), 0, 1)
+        top_grid.addWidget(self.check_connection_check, 1, 0)
+        top_grid.addWidget(self.submit_check, 1, 1)
         self.tiku_card.body_layout.addLayout(top_grid)
 
         self.provider_summary = CaptionLabel(self.tiku_card)
         self.provider_summary.setWordWrap(True)
-        self.tiku_card.body_layout.addWidget(self.provider_summary)
-        self.provider_chip_panel = ChipPanel("暂无可用的协同题库。", self.tiku_card)
+        self.provider_chip_panel = ChipPanel("", self.tiku_card)
         self.provider_chip_panel.set_items([(item, item) for item in COLLAB_PROVIDER_OPTIONS], [])
-        self.tiku_card.body_layout.addWidget(
-            make_field(
-                "协同题库",
-                self.provider_chip_panel,
-                "选择 1 个题库时将直接使用该题库；选择 2 个及以上题库时将自动切换为 MultiTiku。",
-            )
-        )
         self.provider_combo.hide()
         self.decision_provider_combo.hide()
         self.provider_summary.hide()
@@ -1270,6 +1260,10 @@ class ProfileEditorPanel(QWidget):
             '[{"name":"openai","base_url":"https://api.openai.com","api_key":"...","models":["gpt-4.1"]}]'
         )
         self.ai_sites_edit.setMinimumHeight(110)
+        self.ai_site_edit.hide()
+        self.ai_sites_edit.hide()
+        self.true_list_edit.hide()
+        self.false_list_edit.hide()
         self.reasoning_combo = ComboBox(self.tiku_card)
         for effort in ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"):
             self.reasoning_combo.addItem(effort, effort)
@@ -1294,8 +1288,6 @@ class ProfileEditorPanel(QWidget):
         detail_grid.addWidget(make_override_field("LIKE 视觉识图", self.like_vision_check, self.like_vision_override_check), 7, 1)
         detail_grid.addWidget(make_override_field("LIKE 自动重试", self.like_retry_check, self.like_retry_override_check), 8, 0)
         detail_grid.addWidget(make_override_field("TikuAdapter 地址", self.adapter_url_edit, self.adapter_url_override_check), 9, 0, 1, 2)
-        detail_grid.addWidget(make_field("判断题真值列表", self.true_list_edit), 10, 0)
-        detail_grid.addWidget(make_field("判断题假值列表", self.false_list_edit), 10, 1)
         # Legacy third-party question-bank controls remain load-compatible for
         # old JSON files, but are not part of the Responses AI UI anymore.
         for row in (0, 4, 5, 6, 7, 8, 9):
@@ -1306,8 +1298,7 @@ class ProfileEditorPanel(QWidget):
         self.tiku_card.body_layout.addLayout(detail_grid)
         ai_grid = QGridLayout()
         ai_grid.setHorizontalSpacing(16)
-        ai_grid.addWidget(make_field("当前 AI 站点", self.ai_site_edit), 0, 0)
-        ai_grid.addWidget(make_field("思考强度", self.reasoning_combo), 0, 1)
+        ai_grid.addWidget(make_field("思考强度", self.reasoning_combo), 0, 0, 1, 2)
         ai_grid.addWidget(
             self.semantic_cache_check,
             1,
@@ -1316,10 +1307,6 @@ class ProfileEditorPanel(QWidget):
             2,
         )
         self.tiku_card.body_layout.addLayout(ai_grid)
-        self.tiku_card.body_layout.addWidget(
-            make_field("AI 站点与模型列表（JSON）", self.ai_sites_edit,
-                       "可以配置多个站点和多个模型，但一次运行只使用当前选中的一个站点、一个模型和一种思考强度。")
-        )
         self.scroll_layout.addWidget(self.tiku_card)
 
         self.provider_combo.currentTextChanged.connect(self._on_provider_combo_changed)
@@ -2112,16 +2099,7 @@ class ProfileEditorPanel(QWidget):
         self._mark_dirty()
 
     def _update_provider_summary(self) -> None:
-        selected = self.provider_chip_panel.selected_values()
-        decision_provider = self.decision_provider_combo.currentText().strip() or "SiliconFlow"
-        if len(selected) > 1:
-            self.provider_summary.setText(
-                f"当前将以 MultiTiku 模式运行：{' + '.join(selected)}。答案冲突时由 {decision_provider} 进行复核。"
-            )
-        elif len(selected) == 1:
-            self.provider_summary.setText(f"当前题库：{selected[0]}。")
-        else:
-            self.provider_summary.setText(f"当前题库：{self.provider_combo.currentText().strip() or 'TikuYanxi'}。")
+        self.provider_summary.setText("当前 AI 答题方式：Responses API。")
 
     def _mark_dirty(self, *_args) -> None:
         if self._loading or not self._current_profile_name:
@@ -2302,7 +2280,7 @@ class ProfilesPage(PageFrame):
         summary = profile_summary(load_json_profile(profile_name))
         providers = summary.get("providers", []) or []
         provider_text = " + ".join(providers) if len(providers) > 1 else summary.get("provider", "未配置")
-        return f"题库：{provider_text} | 课程：{summary.get('course_count', 0)}"
+        return f"AI 答题：{provider_text} | 课程：{summary.get('course_count', 0)}"
 
     def _set_current_profile(self, profile_name: str) -> None:
         item = self.profile_items.get(profile_name)
@@ -2859,7 +2837,7 @@ class LogCard(CardWidget):
         provider_text = " + ".join(providers) if len(providers) > 1 else summary.get("provider", "未配置")
         self.status_label.setText(status)
         self.meta_label.setText(
-            f"题库：{provider_text}\n课程数量：{summary.get('course_count', 0)}\n{runtime_info}"
+            f"AI 答题：{provider_text}\n课程数量：{summary.get('course_count', 0)}\n{runtime_info}"
         )
         self.start_button.setEnabled(status != "running")
         self.stop_button.setEnabled(status == "running")
