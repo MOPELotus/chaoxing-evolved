@@ -32,6 +32,22 @@ _MEDIA_KEYS = {
 }
 
 
+def _as_bool(value: Any, default: bool = False) -> bool:
+    """Parse profile values without treating the string ``"false"`` as true."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().casefold()
+    if text in {"1", "true", "yes", "y", "on", "enable", "enabled"}:
+        return True
+    if text in {"0", "false", "no", "n", "off", "disable", "disabled", ""}:
+        return False
+    return default
+
+
 @dataclass(frozen=True)
 class ResponseSite:
     name: str
@@ -114,6 +130,10 @@ class ResponsesAnswerService:
         self.reasoning_effort = str(self.config.get("reasoning_effort") or self.config.get("effort") or "medium").lower()
         if self.reasoning_effort not in REASONING_EFFORTS:
             self.reasoning_effort = "medium"
+        # Semantic question caching is opt-in.  The cache object may still be
+        # supplied by the runner for compatibility, but it is completely
+        # bypassed unless this profile switch is enabled.
+        self.semantic_cache_enabled = _as_bool(self.config.get("semantic_cache_enabled"), False)
         self.timeout = max(10.0, float(self.config.get("request_timeout_seconds") or self.config.get("timeout_seconds") or 180))
         self.retry_attempts = max(0, int(self.config.get("retry_attempts") or 2))
 
@@ -270,7 +290,7 @@ class ResponsesAnswerService:
         if not self.site.base_url or not self.site.api_key or not self.model:
             raise RuntimeError("AI 站点、API Key 或模型未配置")
         key = question_cache_key(question, self.site, self.model, self.reasoning_effort)
-        if self.cache is not None and not force_refresh:
+        if self.cache is not None and self.semantic_cache_enabled and not force_refresh:
             cached = self.cache.get_cache(f"ai:{key}")
             if cached:
                 return cached
@@ -287,7 +307,7 @@ class ResponsesAnswerService:
                         answer = self._answer_value(parsed.get("answer"))
                         if not answer:
                             raise RuntimeError("AI 返回空答案")
-                        if self.cache is not None:
+                        if self.cache is not None and self.semantic_cache_enabled:
                             self.cache.add_cache(f"ai:{key}", answer)
                         return answer
                 except (httpx.HTTPError, ValueError, RuntimeError) as error:

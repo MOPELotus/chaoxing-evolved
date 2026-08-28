@@ -1273,6 +1273,10 @@ class ProfileEditorPanel(QWidget):
         self.reasoning_combo = ComboBox(self.tiku_card)
         for effort in ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"):
             self.reasoning_combo.addItem(effort, effort)
+        self.semantic_cache_check = CheckBox(
+            "启用语义缓存（默认关闭）",
+            self.tiku_card,
+        )
 
         detail_grid.addWidget(make_override_field("令牌列表", self.tokens_edit, self.tokens_override_check, "关闭时继承全局令牌。"), 0, 0, 1, 2)
         detail_grid.addWidget(make_override_field("AI 接口地址", self.ai_endpoint_edit, self.ai_endpoint_override_check), 1, 0)
@@ -1304,6 +1308,13 @@ class ProfileEditorPanel(QWidget):
         ai_grid.setHorizontalSpacing(16)
         ai_grid.addWidget(make_field("当前 AI 站点", self.ai_site_edit), 0, 0)
         ai_grid.addWidget(make_field("思考强度", self.reasoning_combo), 0, 1)
+        ai_grid.addWidget(
+            self.semantic_cache_check,
+            1,
+            0,
+            1,
+            2,
+        )
         self.tiku_card.body_layout.addLayout(ai_grid)
         self.tiku_card.body_layout.addWidget(
             make_field("AI 站点与模型列表（JSON）", self.ai_sites_edit,
@@ -1341,6 +1352,7 @@ class ProfileEditorPanel(QWidget):
             self.ai_site_edit,
             self.ai_sites_edit,
             self.reasoning_combo,
+            self.semantic_cache_check,
         )
         self.ai_sites_edit.textChanged.connect(self._mark_dirty)
 
@@ -1550,6 +1562,7 @@ class ProfileEditorPanel(QWidget):
             self.ai_site_edit,
             self.ai_sites_edit,
             self.reasoning_combo,
+            self.semantic_cache_check,
             self.refresh_courses_button,
             self.clear_courses_button,
             self.notification_provider_combo,
@@ -1604,6 +1617,7 @@ class ProfileEditorPanel(QWidget):
         self.ai_site_edit.clear()
         self.ai_sites_edit.setPlainText("[]")
         set_combo_text(self.reasoning_combo, "medium")
+        self.semantic_cache_check.setChecked(False)
 
         set_combo_text(self.provider_combo, "AI")
         set_combo_text(self.decision_provider_combo, "AI")
@@ -1719,6 +1733,7 @@ class ProfileEditorPanel(QWidget):
         self.ai_site_edit.setText(str(tiku.get("ai_site", "") or ""))
         self.ai_sites_edit.setPlainText(json.dumps(tiku.get("ai_sites", []), ensure_ascii=False, indent=2))
         set_combo_text(self.reasoning_combo, str(tiku.get("reasoning_effort", "medium") or "medium"))
+        self.semantic_cache_check.setChecked(parse_bool(effective_tiku.get("semantic_cache_enabled", False), False))
         self.provider_chip_panel.set_selected(selected_providers)
         for key in [
             "tokens",
@@ -1891,6 +1906,7 @@ class ProfileEditorPanel(QWidget):
         tiku["ai_sites"] = ai_sites
         tiku["ai_model"] = self.ai_model_edit.text().strip()
         tiku["reasoning_effort"] = self.reasoning_combo.currentData() or self.reasoning_combo.currentText().strip() or "medium"
+        tiku["semantic_cache_enabled"] = self.semantic_cache_check.isChecked()
 
         notification_provider = self.notification_provider_combo.currentText().strip()
         apply_override(notification, notification_overrides, "notification", "provider", "" if notification_provider == "不启用" else notification_provider)

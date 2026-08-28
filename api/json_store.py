@@ -133,6 +133,7 @@ DEFAULT_PROFILE = {
         "ai_model": "",
         "reasoning_effort": "medium",
         "ai_sites": [],
+        "semantic_cache_enabled": False,
         "check_llm_connection": True,
         "submit": False,
         "cover_rate": 0.9,
@@ -407,7 +408,7 @@ def build_config_sections(profile: dict, global_settings: dict | None = None) ->
     # Keep structured Responses AI site definitions intact; INI-style string
     # serialization would destroy the nested site/model configuration.
     tiku_payload = effective_profile.get("tiku", {})
-    for key in ("ai_sites", "ai_site", "ai_model", "reasoning_effort"):
+    for key in ("ai_sites", "ai_site", "ai_model", "reasoning_effort", "semantic_cache_enabled"):
         if key in tiku_payload:
             tiku_section[key] = deepcopy(tiku_payload[key])
     notification_section = _serialize_profile_section(

@@ -1696,7 +1696,13 @@ class AI(Tiku):
         return self._parse_answer_response(content)
 
     def _init_tiku(self):
-        self._response_service = ResponsesAnswerService(self._conf, CacheDAO())
+        # Do not even create the cache sidecar when semantic caching is
+        # disabled.  This keeps the opt-in switch meaningful for both reads
+        # and writes, while preserving the existing CacheDAO path when it is
+        # explicitly enabled.
+        self._response_service = ResponsesAnswerService(self._conf)
+        if self._response_service.semantic_cache_enabled:
+            self._response_service.cache = CacheDAO()
         self.endpoint = self._conf.get('endpoint', '')
         self.key = self._conf.get('key', '')
         self.model = self._conf.get('model', '')
