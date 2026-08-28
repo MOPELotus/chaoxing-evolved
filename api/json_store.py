@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 from pathlib import Path
+from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -122,11 +123,16 @@ DEFAULT_PROFILE = {
         "notopen_action": "retry",
         "add_learning_count": False,
         "target_count": 100,
+        "reading_duration_seconds": 0,
     },
     "tiku": {
-        "provider": "TikuYanxi",
+        "provider": "AI",
         "providers": [],
-        "decision_provider": "SiliconFlow",
+        "decision_provider": "AI",
+        "ai_site": "",
+        "ai_model": "",
+        "reasoning_effort": "medium",
+        "ai_sites": [],
         "check_llm_connection": True,
         "submit": False,
         "cover_rate": 0.9,
@@ -386,7 +392,7 @@ def build_effective_profile(profile: dict, global_settings: dict | None = None) 
     return payload
 
 
-def build_config_sections(profile: dict, global_settings: dict | None = None) -> dict[str, dict[str, str]]:
+def build_config_sections(profile: dict, global_settings: dict | None = None) -> dict[str, dict[str, Any]]:
     effective_profile = build_effective_profile(profile, global_settings)
     settings = global_settings or load_global_settings()
     defaults = settings.get("defaults", {})
@@ -398,6 +404,12 @@ def build_config_sections(profile: dict, global_settings: dict | None = None) ->
         effective_profile.get("tiku", {}),
         defaults.get("tiku", {}),
     )
+    # Keep structured Responses AI site definitions intact; INI-style string
+    # serialization would destroy the nested site/model configuration.
+    tiku_payload = effective_profile.get("tiku", {})
+    for key in ("ai_sites", "ai_site", "ai_model", "reasoning_effort"):
+        if key in tiku_payload:
+            tiku_section[key] = deepcopy(tiku_payload[key])
     notification_section = _serialize_profile_section(
         effective_profile.get("notification", {}),
         defaults.get("notification", {}),
@@ -411,10 +423,14 @@ def build_config_sections(profile: dict, global_settings: dict | None = None) ->
 
 def profile_summary(profile: dict, global_settings: dict | None = None) -> dict:
     effective_profile = build_effective_profile(profile, global_settings)
+    # Legacy provider fields are migrated at runtime to the single Responses
+    # AI provider; keep the overview consistent before a profile is re-saved.
+    configured_provider = effective_profile["tiku"].get("provider", "")
+    effective_provider = "AI" if configured_provider or effective_profile["tiku"].get("providers") else ""
     return {
         "name": effective_profile["name"],
-        "provider": effective_profile["tiku"].get("provider", ""),
-        "providers": effective_profile["tiku"].get("providers", []),
+        "provider": effective_provider,
+        "providers": [],
         "decision_provider": effective_profile["tiku"].get("decision_provider", ""),
         "username": effective_profile["common"].get("username", ""),
         "use_cookies": effective_profile["common"].get("use_cookies", False),

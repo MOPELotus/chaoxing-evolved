@@ -77,9 +77,9 @@ from desktop.runtime import RunManager, fetch_courses_for_profile
 APP_TITLE = "超星助手桌面版"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 JSON_PROFILE_DIR = PROJECT_ROOT / "desktop_state" / "profiles"
-PROVIDER_OPTIONS = ["TikuYanxi", "SiliconFlow", "AI", "TikuLike", "TikuAdapter", "MultiTiku"]
-COLLAB_PROVIDER_OPTIONS = ["TikuYanxi", "SiliconFlow", "AI", "TikuLike", "TikuAdapter"]
-DECISION_PROVIDER_OPTIONS = ["SiliconFlow", "AI", "TikuYanxi", "TikuLike", "TikuAdapter"]
+PROVIDER_OPTIONS = ["AI"]
+COLLAB_PROVIDER_OPTIONS = []
+DECISION_PROVIDER_OPTIONS = ["AI"]
 NOTOPEN_ACTION_OPTIONS = ["retry", "continue", "ask"]
 NOTOPEN_ACTION_LABELS = {
     "retry": "重试",
@@ -1047,6 +1047,7 @@ class ProfileEditorPanel(QWidget):
         self._build_tiku_card()
         self._build_course_card()
         self._build_notification_card()
+        self.notification_card.hide()
         self._build_json_card()
         self.scroll_layout.addStretch(1)
 
@@ -1080,11 +1081,11 @@ class ProfileEditorPanel(QWidget):
         self.password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.password_edit.setPlaceholderText("登录密码")
         self.speed_spin = DoubleSpinBox(self.common_card)
-        self.speed_spin.setRange(1.0, 2.0)
+        self.speed_spin.setRange(0.1, 1000000.0)
         self.speed_spin.setDecimals(1)
         self.speed_spin.setSingleStep(0.1)
         self.jobs_spin = SpinBox(self.common_card)
-        self.jobs_spin.setRange(1, 16)
+        self.jobs_spin.setRange(1, 1000000)
         self.notopen_combo = ComboBox(self.common_card)
         for value in NOTOPEN_ACTION_OPTIONS:
             self.notopen_combo.addItem(NOTOPEN_ACTION_LABELS[value], value)
@@ -1096,6 +1097,8 @@ class ProfileEditorPanel(QWidget):
         self.target_count_spin = SpinBox(self.common_card)
         self.target_count_spin.setRange(0, 100000)
         self.target_count_spin.setValue(100)
+        self.reading_duration_spin = SpinBox(self.common_card)
+        self.reading_duration_spin.setRange(0, 1000000)
 
         common_grid.addWidget(self.use_cookies_check, 0, 0, 1, 2)
         common_grid.addWidget(make_field("账号", self.username_edit), 1, 0)
@@ -1107,6 +1110,7 @@ class ProfileEditorPanel(QWidget):
         common_grid.addWidget(make_field("Cache 路径", self.cache_path_edit), 4, 1)
         common_grid.addWidget(self.add_learning_count_check, 5, 0)
         common_grid.addWidget(make_field("目标学习次数", self.target_count_spin), 5, 1)
+        common_grid.addWidget(make_field("阅读停留时长（秒）", self.reading_duration_spin), 6, 0)
         self.common_card.body_layout.addLayout(common_grid)
         self.scroll_layout.addWidget(self.common_card)
 
@@ -1121,6 +1125,7 @@ class ProfileEditorPanel(QWidget):
             self.cache_path_edit,
             self.add_learning_count_check,
             self.target_count_spin,
+            self.reading_duration_spin,
         )
 
     def _create_override_check(self, section: str, key: str, widget: QWidget, parent: QWidget) -> CheckBox:
@@ -1154,8 +1159,8 @@ class ProfileEditorPanel(QWidget):
 
     def _build_tiku_card(self) -> None:
         self.tiku_card = SectionCard(
-            "题库与 AI",
-            "未填写的字段将继承全局设置。协同题库可直接在下方选择。",
+            "Responses AI",
+            "配置多个 AI 站点和模型；一次运行只选择一个站点、一个模型和一种思考强度。",
             self.scroll_content,
         )
         top_grid = QGridLayout()
@@ -1197,6 +1202,10 @@ class ProfileEditorPanel(QWidget):
                 "选择 1 个题库时将直接使用该题库；选择 2 个及以上题库时将自动切换为 MultiTiku。",
             )
         )
+        self.provider_combo.hide()
+        self.decision_provider_combo.hide()
+        self.provider_summary.hide()
+        self.provider_chip_panel.hide()
 
         detail_grid = QGridLayout()
         detail_grid.setHorizontalSpacing(16)
@@ -1254,6 +1263,16 @@ class ProfileEditorPanel(QWidget):
         self.true_list_edit.setPlaceholderText("正确,对,√,是")
         self.false_list_edit = LineEdit(self.tiku_card)
         self.false_list_edit.setPlaceholderText("错误,错,×,否")
+        self.ai_site_edit = LineEdit(self.tiku_card)
+        self.ai_site_edit.setPlaceholderText("当前使用的 AI 站点名称，留空使用第一个")
+        self.ai_sites_edit = PlainTextEdit(self.tiku_card)
+        self.ai_sites_edit.setPlaceholderText(
+            '[{"name":"openai","base_url":"https://api.openai.com","api_key":"...","models":["gpt-4.1"]}]'
+        )
+        self.ai_sites_edit.setMinimumHeight(110)
+        self.reasoning_combo = ComboBox(self.tiku_card)
+        for effort in ("none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"):
+            self.reasoning_combo.addItem(effort, effort)
 
         detail_grid.addWidget(make_override_field("令牌列表", self.tokens_edit, self.tokens_override_check, "关闭时继承全局令牌。"), 0, 0, 1, 2)
         detail_grid.addWidget(make_override_field("AI 接口地址", self.ai_endpoint_edit, self.ai_endpoint_override_check), 1, 0)
@@ -1273,7 +1292,23 @@ class ProfileEditorPanel(QWidget):
         detail_grid.addWidget(make_override_field("TikuAdapter 地址", self.adapter_url_edit, self.adapter_url_override_check), 9, 0, 1, 2)
         detail_grid.addWidget(make_field("判断题真值列表", self.true_list_edit), 10, 0)
         detail_grid.addWidget(make_field("判断题假值列表", self.false_list_edit), 10, 1)
+        # Legacy third-party question-bank controls remain load-compatible for
+        # old JSON files, but are not part of the Responses AI UI anymore.
+        for row in (0, 4, 5, 6, 7, 8, 9):
+            for column in (0, 1):
+                item = detail_grid.itemAtPosition(row, column)
+                if item and item.widget():
+                    item.widget().hide()
         self.tiku_card.body_layout.addLayout(detail_grid)
+        ai_grid = QGridLayout()
+        ai_grid.setHorizontalSpacing(16)
+        ai_grid.addWidget(make_field("当前 AI 站点", self.ai_site_edit), 0, 0)
+        ai_grid.addWidget(make_field("思考强度", self.reasoning_combo), 0, 1)
+        self.tiku_card.body_layout.addLayout(ai_grid)
+        self.tiku_card.body_layout.addWidget(
+            make_field("AI 站点与模型列表（JSON）", self.ai_sites_edit,
+                       "可以配置多个站点和多个模型，但一次运行只使用当前选中的一个站点、一个模型和一种思考强度。")
+        )
         self.scroll_layout.addWidget(self.tiku_card)
 
         self.provider_combo.currentTextChanged.connect(self._on_provider_combo_changed)
@@ -1303,7 +1338,11 @@ class ProfileEditorPanel(QWidget):
             self.adapter_url_edit,
             self.true_list_edit,
             self.false_list_edit,
+            self.ai_site_edit,
+            self.ai_sites_edit,
+            self.reasoning_combo,
         )
+        self.ai_sites_edit.textChanged.connect(self._mark_dirty)
 
     def _build_course_card(self) -> None:
         self.course_card = SectionCard(
@@ -1505,6 +1544,12 @@ class ProfileEditorPanel(QWidget):
             self.adapter_url_edit,
             self.true_list_edit,
             self.false_list_edit,
+            self.add_learning_count_check,
+            self.target_count_spin,
+            self.reading_duration_spin,
+            self.ai_site_edit,
+            self.ai_sites_edit,
+            self.reasoning_combo,
             self.refresh_courses_button,
             self.clear_courses_button,
             self.notification_provider_combo,
@@ -1555,9 +1600,13 @@ class ProfileEditorPanel(QWidget):
         self.cache_path_edit.clear()
         self.add_learning_count_check.setChecked(False)
         self.target_count_spin.setValue(100)
+        self.reading_duration_spin.setValue(0)
+        self.ai_site_edit.clear()
+        self.ai_sites_edit.setPlainText("[]")
+        set_combo_text(self.reasoning_combo, "medium")
 
-        set_combo_text(self.provider_combo, "TikuYanxi")
-        set_combo_text(self.decision_provider_combo, "SiliconFlow")
+        set_combo_text(self.provider_combo, "AI")
+        set_combo_text(self.decision_provider_combo, "AI")
         self.check_connection_check.setChecked(True)
         self.submit_check.setChecked(False)
         self.cover_rate_spin.setValue(0.9)
@@ -1637,13 +1686,14 @@ class ProfileEditorPanel(QWidget):
         self.cache_path_edit.setText(str(common.get("cache_path", "")))
         self.add_learning_count_check.setChecked(bool(common.get("add_learning_count", False)))
         self.target_count_spin.setValue(config_int(common.get("target_count", 100), 100))
+        self.reading_duration_spin.setValue(config_int(common.get("reading_duration_seconds", 0), 0))
 
-        provider = str(tiku.get("provider", "TikuYanxi") or "TikuYanxi")
+        provider = str(tiku.get("provider", "AI") or "AI")
         selected_providers = list(tiku.get("providers", []) or [])
         if not selected_providers and provider in COLLAB_PROVIDER_OPTIONS:
             selected_providers = [provider]
-        set_combo_text(self.provider_combo, provider if provider in PROVIDER_OPTIONS else "TikuYanxi")
-        set_combo_text(self.decision_provider_combo, str(tiku.get("decision_provider", "SiliconFlow") or "SiliconFlow"))
+        set_combo_text(self.provider_combo, provider if provider in PROVIDER_OPTIONS else "AI")
+        set_combo_text(self.decision_provider_combo, "AI")
         self.check_connection_check.setChecked(bool(tiku.get("check_llm_connection", True)))
         self.submit_check.setChecked(bool(tiku.get("submit", False)))
         self.cover_rate_spin.setValue(config_float(tiku.get("cover_rate", 0.9), 0.9))
@@ -1666,6 +1716,9 @@ class ProfileEditorPanel(QWidget):
         self.adapter_url_edit.setText(str(effective_tiku.get("url", "") or ""))
         self.true_list_edit.setText(join_csv(list(tiku.get("true_list", DEFAULT_PROFILE["tiku"]["true_list"]))))
         self.false_list_edit.setText(join_csv(list(tiku.get("false_list", DEFAULT_PROFILE["tiku"]["false_list"]))))
+        self.ai_site_edit.setText(str(tiku.get("ai_site", "") or ""))
+        self.ai_sites_edit.setPlainText(json.dumps(tiku.get("ai_sites", []), ensure_ascii=False, indent=2))
+        set_combo_text(self.reasoning_combo, str(tiku.get("reasoning_effort", "medium") or "medium"))
         self.provider_chip_panel.set_selected(selected_providers)
         for key in [
             "tokens",
@@ -1798,20 +1851,14 @@ class ProfileEditorPanel(QWidget):
         common["notopen_action"] = get_notopen_action(self.notopen_combo)
         common["add_learning_count"] = self.add_learning_count_check.isChecked()
         common["target_count"] = int(self.target_count_spin.value())
+        common["reading_duration_seconds"] = int(self.reading_duration_spin.value())
 
-        selected_providers = self.provider_chip_panel.selected_values()
-        provider_value = self.provider_combo.currentText().strip() or "TikuYanxi"
-        if len(selected_providers) > 1:
-            tiku["provider"] = "MultiTiku"
-            tiku["providers"] = selected_providers
-        elif len(selected_providers) == 1:
-            tiku["provider"] = selected_providers[0]
-            tiku["providers"] = selected_providers
-        else:
-            tiku["provider"] = provider_value
-            tiku["providers"] = []
-
-        tiku["decision_provider"] = self.decision_provider_combo.currentText().strip() or "SiliconFlow"
+        # The desktop profile has one active Responses provider.  Multiple
+        # sites/models live under ai_sites as alternatives, never as an
+        # implicit MultiTiku ensemble.
+        tiku["provider"] = "AI"
+        tiku["providers"] = []
+        tiku["decision_provider"] = "AI"
         tiku["check_llm_connection"] = self.check_connection_check.isChecked()
         tiku["submit"] = self.submit_check.isChecked()
         tiku["cover_rate"] = round(float(self.cover_rate_spin.value()), 2)
@@ -1834,6 +1881,16 @@ class ProfileEditorPanel(QWidget):
         apply_override(tiku, tiku_overrides, "tiku", "siliconflow_endpoint", self.silicon_endpoint_edit.text().strip())
         tiku["true_list"] = split_csv(self.true_list_edit.text())
         tiku["false_list"] = split_csv(self.false_list_edit.text())
+        tiku["ai_site"] = self.ai_site_edit.text().strip()
+        try:
+            ai_sites = json.loads(self.ai_sites_edit.toPlainText() or "[]")
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"AI 站点 JSON 格式错误：{exc}") from exc
+        if not isinstance(ai_sites, (list, dict)):
+            raise ValueError("AI 站点 JSON 必须是数组或对象")
+        tiku["ai_sites"] = ai_sites
+        tiku["ai_model"] = self.ai_model_edit.text().strip()
+        tiku["reasoning_effort"] = self.reasoning_combo.currentData() or self.reasoning_combo.currentText().strip() or "medium"
 
         notification_provider = self.notification_provider_combo.currentText().strip()
         apply_override(notification, notification_overrides, "notification", "provider", "" if notification_provider == "不启用" else notification_provider)
@@ -2481,7 +2538,9 @@ class GlobalSettingsPage(PageFrame):
 
         self._build_tiku_defaults_card()
         self._build_notification_defaults_card()
+        self.notification_card.hide()
         self._build_desktop_notice_card()
+        self.desktop_notice_card.hide()
         self.scroll_layout.addStretch(1)
 
         self.reload_button.clicked.connect(self.load_settings)
@@ -2490,7 +2549,7 @@ class GlobalSettingsPage(PageFrame):
         self.load_settings()
 
     def _build_tiku_defaults_card(self) -> None:
-        self.tiku_card = SectionCard("题库默认值", "用于维护 Enncy、SiliconFlow、通用 AI 与 Adapter 的全局凭据。", self.scroll.widget())
+        self.tiku_card = SectionCard("Responses AI 默认值", "用于维护通用 Responses AI 的默认接口、密钥、模型和代理。", self.scroll.widget())
         grid = QGridLayout()
         grid.setHorizontalSpacing(16)
         grid.setVerticalSpacing(12)
@@ -2541,6 +2600,11 @@ class GlobalSettingsPage(PageFrame):
         grid.addWidget(self.like_vision_check, 7, 1)
         grid.addWidget(self.like_retry_check, 8, 0)
         grid.addWidget(make_field("TikuAdapter 地址", self.adapter_url_edit), 9, 0, 1, 2)
+        for row in (0, 4, 5, 6, 7, 8, 9):
+            for column in (0, 1):
+                item = grid.itemAtPosition(row, column)
+                if item and item.widget():
+                    item.widget().hide()
         self.tiku_card.body_layout.addLayout(grid)
         self.scroll_layout.addWidget(self.tiku_card)
 

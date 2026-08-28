@@ -9,7 +9,8 @@ import json
 import re
 from typing import List, Dict, Tuple, Any, Optional
 
-from bs4 import BeautifulSoup, NavigableString
+from bs4 import BeautifulSoup, NavigableString, Tag
+from urllib.parse import urlsplit, urlunsplit
 
 from api.font_decoder import FontDecoder
 from api.logger import logger
@@ -142,12 +143,20 @@ def _extract_points_from_chapter(chapter_unit) -> List[Dict[str, Any]]:
         if point.select_one("span.bntHoverTips") and "已完成" in point.select_one("span.bntHoverTips").text:
             is_finished = True
 
+        point_text = raw_point.get_text(" ", strip=True)
+        challenge = any(
+            str(raw_point.attrs.get(key, "")).strip().lower()
+            in {"1", "true", "yes", "challenge", "challenge_mode", "闯关", "挑战"}
+            for key in ("challenge", "isChallenge", "challengeMode", "data-challenge", "data-challenge-mode")
+        ) or any(marker in point_text for marker in ("闯关", "挑战模式", "挑战"))
+
         point_detail = {
             "id": point_id,
             "title": point_title,
             "jobCount": job_count,
             "has_finished": is_finished,
-            "need_unlock": need_unlock
+            "need_unlock": need_unlock,
+            "challenge": challenge,
         }
         point_list.append(point_detail)
 
@@ -280,6 +289,10 @@ def _process_attachment_cards(cards: List[Dict[str, Any]]) -> List[Dict[str, Any
             doc_job = _process_document_task(card)
             if doc_job:
                 job_list.append(doc_job)
+        elif card_type == "read":
+            read_job = _process_read_task(card)
+            if read_job:
+                job_list.append(read_job)
         elif card_type == "workid":
             work_job = _process_work_task(card)
             if work_job:
@@ -315,18 +328,21 @@ def _process_live_task(card: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 def _process_read_task(card: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """处理阅读类型任务"""
-    if not (card.get("type") == "read" and not card.get("property", {}).get("read", False)):
+    if not (str(card.get("type", "")).lower() == "read" and not card.get("property", {}).get("read", False)):
         return None
 
+    nested_job = card.get("job") if isinstance(card.get("job"), dict) else {}
+    property_data = card.get("property", {}) if isinstance(card.get("property"), dict) else {}
+
     return {
-        "title": card.get("property", {}).get("title", ""),
+        "title": property_data.get("title", ""),
         "type": "read",
-        "id": card.get("property", {}).get("id", ""),
-        "jobid": card.get("jobid", ""),
-        "jtoken": card.get("jtoken", ""),
+        "id": property_data.get("id", ""),
+        "jobid": card.get("jobid") or nested_job.get("jobid", ""),
+        "jtoken": card.get("jtoken") or nested_job.get("jtoken", ""),
         "mid": card.get("mid", ""),
-        "otherinfo": card.get("otherInfo", ""),
-        "enc": card.get("enc", ""),
+        "otherinfo": card.get("otherInfo", "") or nested_job.get("otherInfo", ""),
+        "enc": card.get("enc", "") or nested_job.get("enc", ""),
         "aid": card.get("aid", "")
     }
 
@@ -403,7 +419,11 @@ def decode_questions_info(html_content: str) -> Dict[str, Any]:
 
     # 处理所有问题
     questions = []
-    for div_tag in soup.find("form").find_all("div", class_="singleQuesId"):
+    form = soup.find("form")
+    if not form:
+        return form_data
+    roots = form.select("div.singleQuesId, div.questionLi")
+    for div_tag in roots:
         question = _process_question(div_tag, font_decoder)
         if question:
             questions.append(question)
@@ -451,28 +471,79 @@ def _extract_form_data(soup: BeautifulSoup) -> Dict[str, Any]:
 def _process_question(div_tag, font_decoder=None) -> Dict[str, Any]:
     """处理单个问题"""
     # 提取问题ID和题目类型
-    question_id = div_tag.attrs.get("data", "")
-    q_type_code = div_tag.find("div", class_="TiMu").attrs.get("data", "")
+    question_id = (
+        div_tag.attrs.get("data", "")
+        or div_tag.attrs.get("data-question-id", "")
+        or div_tag.attrs.get("id", "")
+    )
+    type_node = div_tag.find("div", class_="TiMu")
+    type_input = div_tag.select_one("input[name^='answertype'], input[id^='answertype'], input[name^='type']")
+    q_type_code = (
+        type_node.attrs.get("data", "") if type_node else ""
+    ) or (type_input.attrs.get("value", "") if type_input else "")
     q_type = _get_question_type(q_type_code)
 
     # 提取题目内容和选项
-    title_div = div_tag.find("div", class_="Zy_TItle")
+    title_div = div_tag.select_one(".Zy_TItle, .tit, .mark_name, h3")
     options_list = div_tag.find("ul").find_all("li") if div_tag.find("ul") else []
+    if not options_list:
+        options_list = div_tag.select(".answerBg .answer_p, .textDIV, .eidtDiv")
 
     # 解析题目和选项
-    q_title = _extract_title(title_div, font_decoder)
+    q_title, blank_count, underline_count = _rich_node_text(title_div, font_decoder)
+    # Some pages omit TiMu/answertype metadata and expose the family only in
+    # the visible title or in the two matching lists.
+    if q_type == "unknown":
+        q_type = _get_question_type(q_title)
+    if q_type == "unknown" and div_tag.select_one(".firstUlList") and div_tag.select_one(".secondUlList"):
+        q_type = "matching"
     q_options = []
     for li in options_list:
-        q_options.append(_extract_choices(li, font_decoder))
-    # 排序选项
-    q_options.sort()
+        if getattr(li, "name", "") in {"textarea", "input"}:
+            continue
+        option, _, _ = _rich_node_text(li, font_decoder)
+        q_options.append(option or _extract_choices(li, font_decoder))
+    matching_groups = None
+    first_nodes = div_tag.select(".firstUlList > li") or div_tag.select(".firstUlList li")
+    second_nodes = div_tag.select(".secondUlList > li") or div_tag.select(".secondUlList li")
+    first_group = first_nodes[1:]
+    second_group = second_nodes[1:]
+    if first_group and second_group:
+        left = [_rich_node_text(item, font_decoder)[0] for item in first_group]
+        right = [_rich_node_text(item, font_decoder)[0] for item in second_group]
+        matching_groups = {
+            "left": [item for item in left if item],
+            "right": [item for item in right if item],
+        }
+        q_options = [f"左{i + 1}: {item}" for i, item in enumerate(matching_groups["left"])]
+        q_options.extend(f"右{i + 1}: {item}" for i, item in enumerate(matching_groups["right"]))
     q_options = '\n'.join(q_options)
+
+    material_nodes = div_tag.select('.material, .question-material, .data, .case, [class*="material"]')
+    material_parts = []
+    material_images = []
+    for node in material_nodes:
+        material_text, _, _ = _rich_node_text(node, font_decoder)
+        if material_text and material_text != q_title and material_text not in material_parts:
+            material_parts.append(material_text)
+            material_images.extend(_extract_media_urls(material_text))
+    image_urls = _extract_media_urls(q_title) + _extract_media_urls(q_options)
+    image_urls = list(dict.fromkeys(image_urls))
+    material_images = list(dict.fromkeys(material_images))
 
     return {
         "id": question_id,
         "title": q_title,
         "options": q_options,
         "type": q_type,
+        "kind": q_type,
+        "material": "\n".join(material_parts),
+        "image_urls": image_urls,
+        "material_image_urls": material_images,
+        "blank_count": blank_count,
+        "underline_count": underline_count,
+        "matching_groups": matching_groups,
+        "native_type": q_type_code,
         "answerField": {
             f"answer{question_id}": "",
             f"answertype{question_id}": q_type_code,
@@ -488,13 +559,114 @@ def _get_question_type(type_code: str) -> str:
         "2": "completion",  # 填空题
         "3": "judgement",  # 判断题
         "4": "shortanswer",  # 简答题
+        "5": "shortanswer",
+        "6": "shortanswer",
+        "8": "completion",
+        "11": "matching",
+        "14": "cloze",
+        "15": "reading",
+        "12": "oral",
+        "13": "listening",
+        "16": "shared_options",
+        "17": "composite",
+        "7": "ordering",
+        "9": "shortanswer",
+        "单选": "single", "单选题": "single", "单项选择题": "single",
+        "多选": "multiple", "多选题": "multiple", "多项选择题": "multiple", "不定项选择题": "multiple",
+        "判断": "judgement", "判断题": "judgement",
+        "填空": "completion", "填空题": "completion",
+        "简答": "shortanswer", "简答题": "shortanswer",
+        "论述题": "shortanswer", "名词解释": "shortanswer",
+        "连线题": "matching", "匹配题": "matching",
+        "排序题": "ordering", "完形填空": "cloze",
+        "阅读理解": "reading", "资料题": "composite",
+        "共用选项题": "shared_options", "计算题": "calculation",
     }
 
-    if type_code in type_map:
-        return type_map[type_code]
+    normalized = str(type_code or "").strip()
+    if normalized in type_map:
+        return type_map[normalized]
+    for label, mapped in type_map.items():
+        if not label.isdigit() and label in normalized:
+            return mapped
 
     logger.info(f"未知题型代码 -> {type_code}")
     return "unknown"
+
+
+def _extract_media_urls(text: str | None) -> list[str]:
+    if not text:
+        return []
+    values = []
+    patterns = [
+        r'<img[^>]+(?:src|data-original)=["\']([^"\']+)',
+        r'\[QUESTION_IMAGE:([^\]]+)\]',
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, str(text), re.I):
+            source = match.group(1).strip()
+            if source.startswith('//'):
+                source = 'https:' + source
+            parsed = urlsplit(source)
+            if parsed.scheme in {'http', 'https'} and parsed.netloc:
+                # Keep signed query parameters for the actual attachment;
+                # semantic cache canonicalization strips ephemeral tokens
+                # separately.
+                source = urlunsplit(('https', parsed.netloc, parsed.path, parsed.query, ''))
+            if source and source not in values:
+                values.append(source)
+    return values
+
+
+def _rich_node_text(node, font_decoder=None) -> tuple[str, int, int]:
+    """Preserve image/material markers, blank underscores and underlined text."""
+    if not node:
+        return '', 0, 0
+    blank_index = 0
+    underline_count = 0
+
+    def marker() -> str:
+        nonlocal blank_index
+        blank_index += 1
+        return f' [BLANK_{blank_index}] '
+
+    def underlined(element: Tag) -> bool:
+        classes = ' '.join(str(v).lower() for v in (element.get('class') or []))
+        style = re.sub(r'\s+', '', str(element.get('style') or '').lower())
+        return element.name in {'u', 'ins'} or 'underline' in classes or 'text-decoration:underline' in style or 'text-decoration-line:underline' in style or 'border-bottom:' in style
+
+    def render(element) -> str:
+        nonlocal underline_count
+        if isinstance(element, NavigableString):
+            value = str(element).replace('\xa0', ' ')
+            if font_decoder:
+                value = font_decoder.decode(value)
+            return re.sub(r'_{2,}|＿{2,}', lambda _m: marker(), value)
+        if not isinstance(element, Tag):
+            return ''
+        if element.name == 'img':
+            source = str(element.get('src') or element.get('data-original') or '').strip()
+            if source.startswith('//'):
+                source = 'https:' + source
+            return f' [QUESTION_IMAGE:{source or "embedded"}] '
+        if element.name in {'input', 'textarea'} or element.get('contenteditable') == 'true':
+            if str(element.get('type') or 'text').lower() not in {'hidden', 'radio', 'checkbox', 'button', 'submit'}:
+                return marker()
+        if element.name == 'br':
+            return '\n'
+        rendered = ''.join(render(child) for child in element.children)
+        if underlined(element):
+            meaningful = ' '.join(rendered.split())
+            if not meaningful:
+                return marker()
+            underline_count += 1
+            return f' [UNDERLINE]{meaningful}[/UNDERLINE] '
+        return rendered
+
+    value = render(node)
+    value = re.sub(r'[ \t\r\f\v]+', ' ', value)
+    value = re.sub(r' *\n *', '\n', value)
+    return value.strip(), blank_index, underline_count
 
 
 def _extract_title(element, font_decoder=None) -> str:

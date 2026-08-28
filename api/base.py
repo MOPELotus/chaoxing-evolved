@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 import functools
+import json
 import random
 import secrets
 import re
 import threading
 import time
+from collections.abc import Mapping
 from difflib import SequenceMatcher
 from enum import Enum, IntEnum
 from hashlib import md5
@@ -277,6 +279,32 @@ def random_answer(options: str, q_type: str) -> str:
         answer = "true" if random.choice([True, False]) else "false"
     logger.info(f"随机选择 -> {answer}")
     return answer
+
+
+def submission_answer(value, question: dict) -> str:
+    """Convert provider-native answer shapes to the legacy form field.
+
+    Choice/fill-blank answers remain easy for Chaoxing's existing parser to
+    consume.  Extended families retain their object/list shape as JSON so
+    matching pairs, ordering and material relations are not silently lost.
+    """
+    q_type = str(question.get("type") or "")
+    if isinstance(value, Mapping):
+        for key in ("text", "option", "options", "answer"):
+            if set(value) == {key} or (q_type in {"single", "multiple", "judgement", "completion"} and key in value):
+                return submission_answer(value[key], question)
+        if q_type == "completion" and "answers" in value:
+            return submission_answer(value["answers"], question)
+        try:
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        except (TypeError, ValueError):
+            return str(value)
+    if isinstance(value, (list, tuple, set)):
+        values = [str(item).strip() for item in value if str(item).strip()]
+        if q_type == "completion":
+            return "".join(values)
+        return "\n".join(values)
+    return str(value).strip()
 
 
 class Chaoxing:
@@ -891,7 +919,7 @@ class Chaoxing:
         else:
             return StudyResult.SUCCESS
 
-    def study_work(self, _course, _job, _job_info) -> StudyResult:
+    def study_work(self, _course, _job, _job_info, force_ai_refresh: bool = False) -> StudyResult:
         if self.tiku.DISABLE or not self.tiku:
             return StudyResult.SUCCESS
 
@@ -960,7 +988,11 @@ class Chaoxing:
         total_questions = len(questions["questions"])
         found_answers = 0
         query_delay = self.kwargs.get("query_delay", 0)
-        answers = self.tiku.query_all(questions["questions"], query_delay=query_delay)
+        answers = self.tiku.query_all(
+            questions["questions"],
+            query_delay=query_delay,
+            force_refresh=force_ai_refresh,
+        )
 
         if not isinstance(answers, list):
             logger.error("题库 query_all 返回的数据格式异常，期望列表。将采用随机答案答题")
@@ -980,6 +1012,7 @@ class Chaoxing:
                 q[f'answerSource{q["id"]}'] = "random"
             else:
                 # 根据响应结果选择答案
+                res = submission_answer(res, q)
                 if q["type"] == "multiple":
                     # 多选处理
                     options_list = multi_cut(q["options"], _ORIGIN_HTML_CONTENT)
@@ -987,6 +1020,11 @@ class Chaoxing:
                     if res_list is not None and options_list is not None:
                         for _a in clean_res(res_list):
                             matched = False
+                            if str(_a).strip().isdigit():
+                                option_index = int(str(_a).strip()) - 1
+                                if 0 <= option_index < len(options_list):
+                                    answer += options_list[option_index][:1]
+                                    continue
                             for o in options_list:
                                 if (
                                         is_subsequence(_a, o)  # 去掉各种符号和前面ABCD的答案应当是选项的子序列
@@ -1010,17 +1048,19 @@ class Chaoxing:
                             if is_subsequence(t_res[0], o):
                                 answer = o[:1]
                                 break
+                        if not answer and t_res and str(t_res[0]).strip().isdigit():
+                            option_index = int(str(t_res[0]).strip()) - 1
+                            if 0 <= option_index < len(options_list):
+                                answer = options_list[option_index][:1]
                         if not answer and t_res:
                             answer = best_option_by_similarity(t_res[0], options_list, threshold=0.8)
                 elif q["type"] == "judgement":
                     answer = "true" if self.tiku.judgement_select(res) else "false"
                 elif q["type"] == "completion":
-                    if isinstance(res, list):
-                        answer = "".join(res)
-                    elif isinstance(res, str):
-                        answer = res
+                    answer = res
                 else:
-                    # 其他类型直接使用答案 （目前仅知有简答题，待补充处理）
+                    # Extended/native families are encoded as JSON when the
+                    # provider returns an object/list, preserving relations.
                     answer = res
 
                 if not answer:  # 检查 answer 是否为空

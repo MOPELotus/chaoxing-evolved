@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import enum
-import os
+import math
 import threading
 import time
 import traceback
@@ -26,7 +26,6 @@ from api.json_store import (
 from api.live import Live
 from api.live_process import LiveProcessor
 from api.logger import logger
-from api.notification import Notification
 from api.runtime import configure_runtime
 
 
@@ -55,14 +54,6 @@ def to_bool(value: object) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
-def should_send_internal_notifications() -> bool:
-    return os.environ.get("DESKTOP_MANAGED_RUN", "").strip().lower() not in {"1", "true", "yes", "on"}
-
-
-def should_initialize_internal_notifications() -> bool:
-    return should_send_internal_notifications()
-
-
 def _normalize_common_config(section: dict[str, Any]) -> dict[str, Any]:
     course_list = section.get("course_list", []) or []
     if isinstance(course_list, str):
@@ -78,8 +69,10 @@ def _normalize_common_config(section: dict[str, Any]) -> dict[str, Any]:
         "password": str(section.get("password", "") or "").strip(),
         "course_list": course_list,
         "speed": float(section.get("speed", 1.0) or 1.0),
-        "jobs": int(section.get("jobs", 4) or 4),
+        "jobs": max(1, int(section.get("jobs", 4) or 4)),
         "notopen_action": str(section.get("notopen_action", "retry") or "retry").strip(),
+        "challenge_retry_attempts": max(1, min(3, int(section.get("challenge_retry_attempts", 3) or 3))),
+        "reading_duration_seconds": max(0, int(section.get("reading_duration_seconds", 0) or 0)),
     }
 
 
@@ -87,7 +80,9 @@ def build_runner_config(profile: dict, global_settings: dict | None = None) -> t
     effective_profile = build_effective_profile(profile, global_settings)
     config_sections = build_config_sections(effective_profile, global_settings)
     common_config = _normalize_common_config(effective_profile.get("common", {}))
-    return common_config, config_sections["tiku"], config_sections["notification"], effective_profile
+    # Notification settings are retained in profile files for forward/backward
+    # compatibility, but are deliberately not part of the runner anymore.
+    return common_config, config_sections["tiku"], {}, effective_profile
 
 
 def configure_profile_runtime(profile_name: str, common_config: dict[str, Any]) -> None:
@@ -98,7 +93,7 @@ def configure_profile_runtime(profile_name: str, common_config: dict[str, Any]) 
     )
 
 
-def init_chaoxing(common_config: dict[str, Any], tiku_config: dict[str, str]) -> Chaoxing:
+def init_chaoxing(common_config: dict[str, Any], tiku_config: dict[str, Any]) -> Chaoxing:
     username = common_config.get("username", "")
     password = common_config.get("password", "")
     use_cookies = common_config.get("use_cookies", False)
@@ -123,7 +118,15 @@ def init_chaoxing(common_config: dict[str, Any], tiku_config: dict[str, str]) ->
     return Chaoxing(account=account, tiku=tiku, query_delay=query_delay)
 
 
-def process_job(chaoxing: Chaoxing, course: dict, job: dict, job_info: dict, speed: float) -> StudyResult:
+def process_job(
+    chaoxing: Chaoxing,
+    course: dict,
+    job: dict,
+    job_info: dict,
+    speed: float,
+    reading_duration_seconds: int = 0,
+    challenge_attempt: int = 0,
+) -> StudyResult:
     if job["type"] == "video":
         logger.trace(f"识别到视频任务, 任务章节: {course['title']} 任务ID: {job['jobid']}")
         video_result = chaoxing.study_video(course, job, job_info, _speed=speed, _type="Video")
@@ -140,11 +143,15 @@ def process_job(chaoxing: Chaoxing, course: dict, job: dict, job_info: dict, spe
 
     if job["type"] == "workid":
         logger.trace(f"识别到章节检测任务, 任务章节: {course['title']}")
-        return chaoxing.study_work(course, job, job_info)
+        return chaoxing.study_work(course, job, job_info, force_ai_refresh=challenge_attempt > 0)
 
     if job["type"] == "read":
         logger.trace(f"识别到阅读任务, 任务章节: {course['title']}")
-        return chaoxing.study_read(course, job, job_info)
+        result = chaoxing.study_read(course, job, job_info)
+        if result.is_success() and reading_duration_seconds > 0:
+            logger.info(f"阅读任务停留 {reading_duration_seconds} 秒以满足阅读时长要求")
+            time.sleep(reading_duration_seconds)
+        return result
 
     if job["type"] == "live":
         logger.trace(f"识别到直播任务, 任务章节: {course['title']} 任务ID: {job['jobid']}")
@@ -159,14 +166,20 @@ def process_job(chaoxing: Chaoxing, course: dict, job: dict, job_info: dict, spe
                 defaults=defaults,
                 course_id=course.get("courseId"),
             )
+            live_result = {"ok": False}
+
+            def run_live() -> None:
+                live_result["ok"] = bool(LiveProcessor.run_live(live, 1.0))
+
             thread = threading.Thread(
-                target=LiveProcessor.run_live,
-                args=(live, speed),
+                target=run_live,
+                # Accelerated live playback does not satisfy the platform's
+                # duration accounting, so live tasks always run at 1x.
                 daemon=True,
             )
             thread.start()
             thread.join()
-            return StudyResult.SUCCESS
+            return StudyResult.SUCCESS if live_result["ok"] else StudyResult.ERROR
         except Exception as exc:
             logger.error(f"处理直播任务时出错: {exc}")
             return StudyResult.ERROR
@@ -191,7 +204,7 @@ class JobProcessor:
         self.chaoxing = chaoxing
         self.course = course
         self.speed = config["speed"]
-        self.max_tries = 5
+        self.max_tries = max(1, min(3, int(config.get("challenge_retry_attempts", 3) or 3)))
         self.tasks = tasks
         self.failed_tasks: list[ChapterTask] = []
         self.task_queue: PriorityQueue[ChapterTask] = PriorityQueue()
@@ -199,6 +212,14 @@ class JobProcessor:
         self.threads: list[threading.Thread] = []
         self.worker_num = config["jobs"]
         self.config = config
+
+    @staticmethod
+    def _is_challenge(point: dict[str, Any]) -> bool:
+        if point.get("challenge") is True:
+            return True
+        return str(point.get("challenge", "")).strip().lower() in {
+            "1", "true", "yes", "challenge", "challenge_mode", "闯关", "挑战"
+        }
 
     def run(self) -> None:
         for task in self.tasks:
@@ -225,7 +246,11 @@ class JobProcessor:
                 logger.info("任务队列已关闭")
                 return
 
-            task.result = process_chapter(self.chaoxing, self.course, task.point, self.speed)
+            task.result = process_chapter(
+                self.chaoxing, self.course, task.point, self.speed, self.worker_num,
+                self.config.get("reading_duration_seconds", 0),
+                task.tries,
+            )
 
             match task.result:
                 case ChapterResult.SUCCESS:
@@ -251,13 +276,14 @@ class JobProcessor:
 
                 case ChapterResult.ERROR:
                     task.tries += 1
+                    retry_limit = self.max_tries if self._is_challenge(task.point) else 1
                     logger.warning(
                         "Retrying task {} ({}/{} attempts)",
                         task.point["title"],
                         task.tries,
-                        self.max_tries,
+                        retry_limit,
                     )
-                    if task.tries >= self.max_tries:
+                    if task.tries >= retry_limit:
                         logger.error("Max retries reached for task: {}", task.point["title"])
                         self.failed_tasks.append(task)
                         self.task_queue.task_done()
@@ -282,7 +308,15 @@ class JobProcessor:
             return
 
 
-def process_chapter(chaoxing: Chaoxing, course: dict[str, Any], point: dict[str, Any], speed: float) -> ChapterResult:
+def process_chapter(
+    chaoxing: Chaoxing,
+    course: dict[str, Any],
+    point: dict[str, Any],
+    speed: float,
+    max_workers: int = 5,
+    reading_duration_seconds: int = 0,
+    challenge_attempt: int = 0,
+) -> ChapterResult:
     logger.info(f'当前章节: {point["title"]}')
     if point["has_finished"]:
         logger.info(f'章节：{point["title"]} 已完成所有任务点')
@@ -295,15 +329,48 @@ def process_chapter(chaoxing: Chaoxing, course: dict[str, Any], point: dict[str,
         return ChapterResult.NOT_OPEN
 
     job_results: list[StudyResult] = []
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        for result in executor.map(lambda job: process_job(chaoxing, course, job, job_info, speed), jobs):
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        for result in executor.map(
+            lambda job: process_job(
+                chaoxing,
+                course,
+                job,
+                job_info,
+                speed,
+                reading_duration_seconds,
+                challenge_attempt,
+            ),
+            jobs,
+        ):
             job_results.append(result)
 
     for result in job_results:
         if result.is_failure():
             return ChapterResult.ERROR
 
-    return ChapterResult.SUCCESS
+    try:
+        fresh_points = chaoxing.get_course_point(
+            course["courseId"], course["clazzId"], course["cpi"]
+        ).get("points", [])
+        fresh = next(
+            (item for item in fresh_points if str(item.get("id")) == str(point.get("id"))),
+            None,
+        )
+        if fresh and fresh.get("has_finished"):
+            return ChapterResult.SUCCESS
+        challenge = any(
+            str(point.get(key, "")).strip().lower() in {"1", "true", "yes", "challenge", "闯关", "挑战"}
+            for key in ("challenge", "isChallenge", "challengeMode", "闯关", "挑战")
+        )
+        logger.warning(
+            f"{'挑战' if challenge else '知识点'} {point['title']} 完成本地任务后仍未被平台确认"
+        )
+        return ChapterResult.ERROR
+    except Exception as exc:
+        logger.warning(f"重新读取章节完成状态失败: {exc}")
+        return ChapterResult.ERROR
+
+    return ChapterResult.ERROR
 
 
 def process_course(chaoxing: Chaoxing, course: dict[str, Any], config: dict[str, Any]) -> None:
@@ -320,6 +387,9 @@ def process_course(chaoxing: Chaoxing, course: dict[str, Any], config: dict[str,
 
     processor = JobProcessor(chaoxing, course, tasks, config)
     processor.run()
+    if processor.failed_tasks:
+        failed_titles = ", ".join(task.point.get("title", "") for task in processor.failed_tasks)
+        raise RuntimeError(f"课程 [{course['title']}] 存在未完成章节: {failed_titles}")
     if to_bool(config.get("add_learning_count", False)):
         target_count = max(0, int(config.get("target_count", 100) or 100))
         logger.info(f"开始增加课程章节学习次数，目标总次数: {target_count}")
@@ -361,20 +431,14 @@ def format_time(num, suffix="", divisor=""):
 
 
 def run_loaded_profile(profile: dict, global_settings: dict | None = None) -> None:
-    notification = Notification()
-
     try:
-        common_config, tiku_config, notification_config, effective_profile = build_runner_config(profile, global_settings)
+        common_config, tiku_config, _notification_config, effective_profile = build_runner_config(profile, global_settings)
 
-        common_config["speed"] = min(2.0, max(1.0, common_config.get("speed", 1.0)))
+        if common_config["speed"] <= 0 or not math.isfinite(common_config["speed"]):
+            raise ValueError("倍速必须是大于 0 的有限数字")
         common_config["notopen_action"] = common_config.get("notopen_action", "retry") or "retry"
 
         configure_profile_runtime(effective_profile["name"], common_config)
-
-        if should_initialize_internal_notifications():
-            notification.config_set(notification_config)
-            notification = notification.get_notification_from_config()
-            notification.init_notification()
 
         chaoxing = init_chaoxing(common_config, tiku_config)
         login_state = chaoxing.login(login_with_cookies=common_config.get("use_cookies", False))
@@ -389,19 +453,12 @@ def run_loaded_profile(profile: dict, global_settings: dict | None = None) -> No
             process_course(chaoxing, course, common_config)
 
         logger.info("所有课程学习任务已完成")
-        if should_send_internal_notifications():
-            notification.send("chaoxing : 所有课程学习任务已完成")
     except KeyboardInterrupt as exc:
         logger.error(f"错误: 程序被用户手动中断, {exc}")
         raise
     except BaseException as exc:
         logger.error(f"错误: {type(exc).__name__}: {exc}")
         logger.error(traceback.format_exc())
-        if should_send_internal_notifications():
-            try:
-                notification.send(f"chaoxing : 出现错误 {type(exc).__name__}: {exc}\n{traceback.format_exc()}")
-            except Exception:
-                pass
         raise
 
 

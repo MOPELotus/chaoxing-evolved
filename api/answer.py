@@ -10,9 +10,10 @@ import tempfile
 import threading
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from pathlib import Path
 from re import sub
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -23,6 +24,7 @@ from urllib3 import disable_warnings, exceptions
 from api.answer_check import check_answer
 from api.logger import logger
 from api.runtime import get_runtime_context
+from api.response_ai import ResponsesAnswerService
 
 # 关闭警告
 disable_warnings(exceptions.InsecureRequestWarning)
@@ -30,6 +32,7 @@ disable_warnings(exceptions.InsecureRequestWarning)
 __all__ = ["CacheDAO", "Tiku", "TikuYanxi", "TikuLike", "TikuAdapter", "AI", "SiliconFlow", "MultiTiku"]
 
 IMG_TAG_PATTERN = re.compile(r'<img\b[^>]*?\bsrc=["\']([^"\']+)["\'][^>]*>', re.IGNORECASE)
+IMAGE_MARKER_PATTERN = re.compile(r'\[QUESTION_IMAGE:([^\]]+)\]', re.IGNORECASE)
 HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
 DEFAULT_IMAGE_HEADERS = {
     "User-Agent": (
@@ -55,6 +58,10 @@ def extract_image_urls(text: str | None) -> list[str]:
     for match in IMG_TAG_PATTERN.finditer(str(text)):
         url = match.group(1).strip()
         if url and url not in image_urls:
+            image_urls.append(url)
+    for match in IMAGE_MARKER_PATTERN.finditer(str(text)):
+        url = match.group(1).strip()
+        if url and url != "embedded" and url not in image_urls:
             image_urls.append(url)
     return image_urls
 
@@ -324,11 +331,11 @@ class CacheDAO:
         except IOError as e:
             logger.error(f"Failed to write cache: {e}")
 
-    def get_cache(self, question: str) -> Optional[str]:
+    def get_cache(self, question: str) -> Any:
         data = self._read_cache()
         return data.get(question)
 
-    def add_cache(self, question: str, answer: str) -> None:
+    def add_cache(self, question: str, answer: Any) -> None:
         # 为缓存写入加锁，防止并发写入损坏文件
         with self._lock:
             data = self._read_cache()
@@ -384,10 +391,23 @@ class Tiku:
             logger.error("未找到题库配置, 已忽略题库功能")
         if not self.DISABLE:
             # 设置提交模式
-            self.SUBMIT = True if self._conf['submit'] == 'true' else False
-            self.COVER_RATE = float(self._conf['cover_rate'])
-            self.true_list = self._conf['true_list'].split(',')
-            self.false_list = self._conf['false_list'].split(',')
+            self.SUBMIT = str(self._conf.get('submit', 'false')).strip().lower() in {'true', '1', 'yes', 'on'}
+            try:
+                self.COVER_RATE = float(self._conf.get('cover_rate', 0.8) or 0.8)
+            except (TypeError, ValueError):
+                self.COVER_RATE = 0.8
+            true_values = self._conf.get('true_list', ['正确', '对', '√', '是'])
+            false_values = self._conf.get('false_list', ['错误', '错', '×', '否'])
+            self.true_list = (
+                [str(item).strip() for item in true_values if str(item).strip()]
+                if isinstance(true_values, (list, tuple))
+                else [item.strip() for item in str(true_values).split(',') if item.strip()]
+            )
+            self.false_list = (
+                [str(item).strip() for item in false_values if str(item).strip()]
+                if isinstance(false_values, (list, tuple))
+                else [item.strip() for item in str(false_values).split(',') if item.strip()]
+            )
             # 调用自定义题库初始化
             self._init_tiku()
 
@@ -432,9 +452,14 @@ class Tiku:
         if isinstance(option_source, list):
             option_source = "\n".join(str(item) for item in option_source)
         option_image_urls = extract_image_urls(option_source)
-        normalized_q_info['image_urls'] = title_image_urls + [
+        known_images = list(normalized_q_info.get("image_urls") or [])
+        known_material_images = list(normalized_q_info.get("material_image_urls") or [])
+        normalized_q_info['image_urls'] = known_images + title_image_urls + [
             url for url in option_image_urls if url not in title_image_urls
         ]
+        normalized_q_info['image_urls'] = list(dict.fromkeys(
+            normalized_q_info['image_urls'] + known_material_images
+        ))
         logger.debug(f"处理后标题：{normalized_q_info['title']}")
         if normalized_q_info['image_urls']:
             logger.debug(f"识别到题目图片：{', '.join(normalized_q_info['image_urls'])}")
@@ -443,11 +468,49 @@ class Tiku:
     def _validate_answer(self, answer: str, q_info: dict) -> bool:
         return check_answer(answer, q_info['type'], self)
 
-    def _query_validated(self, q_info: dict) -> Optional[str]:
+    @staticmethod
+    def _coerce_answer(answer: Any, q_info: dict) -> Any:
+        """Normalize Responses values only where the platform expects text.
+
+        Complex question types intentionally keep lists/dicts so matching,
+        ordering, cloze and material relations are not flattened before the
+        submission layer can interpret them.
+        """
+        if answer is None:
+            return None
+        q_type = str(q_info.get("type") or "")
+        if isinstance(answer, str):
+            return answer.strip()
+        if q_type in {"single", "multiple", "judgement"}:
+            if isinstance(answer, Mapping):
+                for key in ("option", "options", "text", "answer"):
+                    if key in answer:
+                        return Tiku._coerce_answer(answer[key], q_info)
+            if isinstance(answer, (list, tuple, set)):
+                return "\n".join(str(item).strip() for item in answer if str(item).strip())
+            return str(answer).strip()
+        return answer
+
+    @staticmethod
+    def _answer_display(answer: Any) -> str:
+        if isinstance(answer, (Mapping, list, tuple)):
+            try:
+                return json.dumps(answer, ensure_ascii=False, sort_keys=True)
+            except (TypeError, ValueError):
+                return str(answer)
+        return str(answer)
+
+    @staticmethod
+    def _has_answer(answer: Any) -> bool:
+        if answer is None or answer == "":
+            return False
+        return not isinstance(answer, (Mapping, list, tuple, set)) or bool(answer)
+
+    def _query_validated(self, q_info: dict) -> Any:
         answer = self._query(q_info)
-        if answer:
-            answer = answer.strip()
-            logger.info(f"从{self.name}获取答案：{q_info['title']} -> {answer}")
+        answer = self._coerce_answer(answer, q_info)
+        if self._has_answer(answer):
+            logger.info(f"从{self.name}获取答案：{q_info['title']} -> {self._answer_display(answer)}")
             if self._validate_answer(answer, q_info):
                 return answer
 
@@ -457,7 +520,7 @@ class Tiku:
         logger.error(f"从{self.name}获取答案失败：{q_info['title']}")
         return None
 
-    def query(self,q_info:dict) -> Optional[str]:
+    def query(self,q_info:dict) -> Any:
         if self.DISABLE:
             return None
 
@@ -465,26 +528,33 @@ class Tiku:
 
         # 先过缓存
         cache_dao = CacheDAO()
-        answer = cache_dao.get_cache(q_info['title'])
-        if answer:
-            logger.info(f"从缓存中获取答案：{q_info['title']} -> {answer}")
-            answer = answer.strip()
+        use_legacy_cache = getattr(self, "_response_service", None) is None
+        answer = cache_dao.get_cache(q_info['title']) if use_legacy_cache else None
+        answer = self._coerce_answer(answer, q_info)
+        if self._has_answer(answer):
+            logger.info(f"从缓存中获取答案：{q_info['title']} -> {self._answer_display(answer)}")
             if self._validate_answer(answer, q_info):
                 return answer
             logger.warning(f"缓存中的答案未通过当前题型校验，已忽略缓存：{q_info['title']}")
 
         answer = self._query_validated(q_info)
         if answer:
-            cache_dao.add_cache(q_info['title'], answer)
+            if use_legacy_cache:
+                cache_dao.add_cache(q_info['title'], answer)
             return answer
         return None
 
-    def query_without_cache(self, q_info: dict) -> Optional[str]:
+    def query_without_cache(self, q_info: dict) -> Any:
         if self.DISABLE:
             return None
         return self._query_validated(self._normalize_question_info(q_info))
 
-    def query_all(self, q_list: list[dict], query_delay: float = 0.0) -> list[Optional[str]]:
+    def query_all(
+        self,
+        q_list: list[dict],
+        query_delay: float = 0.0,
+        force_refresh: bool = False,
+    ) -> list[Any]:
         if self.DISABLE:
             return [None] * len(q_list)
 
@@ -492,6 +562,7 @@ class Tiku:
         pending_indices = []
 
         cache_dao = CacheDAO()
+        use_legacy_cache = getattr(self, "_response_service", None) is None
         for idx, q in enumerate(q_list):
             if not self._is_manual_mode:
                 logger.debug(f"原始标题：{q['title']}")
@@ -500,17 +571,31 @@ class Tiku:
             if not self._is_manual_mode:
                 logger.debug(f"处理后标题：{q['title']}")
 
-            answer = cache_dao.get_cache(q['title'])
-            if answer:
-                logger.info(f"从缓存中获取答案：{q['title']} -> {answer}")
-                results[idx] = answer.strip()
+            answer = (
+                None
+                if force_refresh or not use_legacy_cache
+                else cache_dao.get_cache(q['title'])
+            )
+            answer = self._coerce_answer(answer, q)
+            if self._has_answer(answer):
+                logger.info(f"从缓存中获取答案：{q['title']} -> {self._answer_display(answer)}")
+                if self._validate_answer(answer, q):
+                    results[idx] = answer
+                else:
+                    logger.warning(f"缓存中的答案未通过当前题型校验，已忽略缓存：{q['title']}")
+                    pending_indices.append(idx)
             else:
                 pending_indices.append(idx)
 
         if not pending_indices:
             return results
 
-        sub_q_list = [q_list[idx] for idx in pending_indices]
+        sub_q_list = []
+        for idx in pending_indices:
+            question = dict(q_list[idx])
+            if force_refresh:
+                question["_force_refresh"] = True
+            sub_q_list.append(question)
         sub_results = self._query_all(sub_q_list, query_delay=query_delay)
 
         if not isinstance(sub_results, list):
@@ -525,11 +610,12 @@ class Tiku:
 
         for idx, ans in zip(pending_indices, sub_results):
             q_info = q_list[idx]
-            if ans:
-                ans = ans.strip()
-                logger.info(f"从{self.name}获取答案：{q_info['title']} -> {ans}")
+            ans = self._coerce_answer(ans, q_info)
+            if self._has_answer(ans):
+                logger.info(f"从{self.name}获取答案：{q_info['title']} -> {self._answer_display(ans)}")
                 if check_answer(ans, q_info['type'], self):
-                    cache_dao.add_cache(q_info['title'], ans)
+                    if use_legacy_cache:
+                        cache_dao.add_cache(q_info['title'], ans)
                     results[idx] = ans
                 else:
                     logger.info(f"从{self.name}获取到的答案类型与题目类型不符，已舍弃")
@@ -561,7 +647,7 @@ class Tiku:
                 results.append(None)
         return results
 
-    def get_tiku_from_config(config: Optional[dict] = None, config_path: Optional[str] = None):
+    def get_tiku_from_config(self, config: Optional[dict] = None, config_path: Optional[str] = None):
         """
         从配置文件加载题库, 这个配置可以是用户提供, 可以是默认配置文件
         """
@@ -581,6 +667,13 @@ class Tiku:
             return DummyTiku(config_path=path)
 
         provider_names = parse_provider_names(config.get("providers") or cls_name)
+        if config.get("ai_sites") or provider_names != ["AI"] or cls_name != "AI":
+            # Responses mode keeps multiple sites/models as selectable
+            # alternatives; it never creates an implicit ensemble.  Legacy
+            # provider names/lists are migrated to the single native
+            # Responses provider as well.
+            provider_names = ["AI"]
+            cls_name = "AI"
         if len(provider_names) > 1 or cls_name in {"MultiTiku", "CompositeTiku"}:
             if provider_names:
                 config["providers"] = ",".join(provider_names)
@@ -1332,8 +1425,8 @@ class TikuAdapter(Tiku):
 
 
 class MultiTiku(Tiku):
-    def __init__(self) -> None:
-        super().__init__()
+    def __init__(self, config_path: Optional[str] = None) -> None:
+        super().__init__(config_path)
         self.name = '多题库协同'
         self.providers: list[Tiku] = []
         self.decision_provider: Optional[Tiku] = None
@@ -1447,6 +1540,7 @@ class AI(Tiku):
         self.name = 'AI大模型答题'
         self.last_request_time = None
         self._lock = threading.Lock()
+        self._response_service: ResponsesAnswerService | None = None
 
     def _is_deepseek_v4(self) -> bool:
         return (
@@ -1589,6 +1683,11 @@ class AI(Tiku):
         ]
 
     def _query(self, q_info: dict):
+        if self._response_service is not None:
+            force_refresh = bool(q_info.get("_force_refresh"))
+            if force_refresh:
+                q_info = {key: value for key, value in q_info.items() if key != "_force_refresh"}
+            return self._response_service.answer(q_info, force_refresh=force_refresh)
         content = self._request_completion(self._build_question_messages(q_info))
         return self._parse_answer_response(content)
 
@@ -1597,11 +1696,12 @@ class AI(Tiku):
         return self._parse_answer_response(content)
 
     def _init_tiku(self):
-        self.endpoint = self._conf['endpoint']
-        self.key = self._conf['key']
-        self.model = self._conf['model']
-        self.http_proxy = self._conf['http_proxy']
-        self.min_interval_seconds = int(self._conf['min_interval_seconds'])
+        self._response_service = ResponsesAnswerService(self._conf, CacheDAO())
+        self.endpoint = self._conf.get('endpoint', '')
+        self.key = self._conf.get('key', '')
+        self.model = self._conf.get('model', '')
+        self.http_proxy = self._conf.get('http_proxy', '')
+        self.min_interval_seconds = int(self._conf.get('min_interval_seconds', 0) or 0)
         self.request_timeout_seconds = int(self._conf.get('request_timeout_seconds', 600))
 
     def check_llm_connection(self) -> bool:
@@ -1609,6 +1709,8 @@ class AI(Tiku):
         检查大模型连接是否可用
         发送一个简单的测试请求来验证 API 配置
         """
+        if self._response_service is not None:
+            return self._response_service.check_connection()
         logger.info(f'正在检查 {self.name} 连接...')
         try:
             client = self._build_client()
