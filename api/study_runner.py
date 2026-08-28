@@ -14,7 +14,7 @@ from typing import Any
 from tqdm import tqdm
 
 from api.answer import Tiku
-from api.base import Account, Chaoxing, StudyResult
+from api.base import Account, Chaoxing, StudyResult, is_expired_task_text
 from api.exceptions import LoginError
 from api.json_store import (
     build_config_sections,
@@ -143,6 +143,9 @@ def process_job(
 
     if job["type"] == "workid":
         logger.trace(f"识别到章节检测任务, 任务章节: {course['title']}")
+        if job.get("is_expired") or is_expired_task_text(job.get("status")) or is_expired_task_text(job.get("deadline")):
+            logger.warning("章节检测任务已过期，按跳过处理: {}", job.get("jobid", ""))
+            return StudyResult.SKIPPED
         return chaoxing.study_work(course, job, job_info, force_ai_refresh=challenge_attempt > 0)
 
     if job["type"] == "read":
@@ -318,6 +321,9 @@ def process_chapter(
     challenge_attempt: int = 0,
 ) -> ChapterResult:
     logger.info(f'当前章节: {point["title"]}')
+    if is_expired_task_text(point.get("title")) or is_expired_task_text(point.get("status")):
+        logger.warning("章节任务已过期，按完成处理: {}", point.get("title", ""))
+        return ChapterResult.SUCCESS
     if point["has_finished"]:
         logger.info(f'章节：{point["title"]} 已完成所有任务点')
         return ChapterResult.SUCCESS
@@ -344,6 +350,7 @@ def process_chapter(
         ):
             job_results.append(result)
 
+    skipped_result = any(result == StudyResult.SKIPPED for result in job_results)
     for result in job_results:
         if result.is_failure():
             return ChapterResult.ERROR
@@ -362,6 +369,12 @@ def process_chapter(
             str(point.get(key, "")).strip().lower() in {"1", "true", "yes", "challenge", "闯关", "挑战"}
             for key in ("challenge", "isChallenge", "challengeMode", "闯关", "挑战")
         )
+        if skipped_result:
+            logger.info(
+                "章节包含已过期且不可提交的任务，平台不会将该卡片标记为完成；按跳过处理: {}",
+                point["title"],
+            )
+            return ChapterResult.SUCCESS
         logger.warning(
             f"{'挑战' if challenge else '知识点'} {point['title']} 完成本地任务后仍未被平台确认"
         )

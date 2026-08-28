@@ -149,6 +149,9 @@ def _extract_points_from_chapter(chapter_unit) -> List[Dict[str, Any]]:
             in {"1", "true", "yes", "challenge", "challenge_mode", "闯关", "挑战"}
             for key in ("challenge", "isChallenge", "challengeMode", "data-challenge", "data-challenge-mode")
         ) or any(marker in point_text for marker in ("闯关", "挑战模式", "挑战"))
+        expired = any(
+            marker in point_text for marker in ("已过期", "已截止", "已结束", "已关闭", "作业已过期")
+        )
 
         point_detail = {
             "id": point_id,
@@ -157,6 +160,8 @@ def _extract_points_from_chapter(chapter_unit) -> List[Dict[str, Any]]:
             "has_finished": is_finished,
             "need_unlock": need_unlock,
             "challenge": challenge,
+            "status": point_text,
+            "is_expired": expired,
         }
         point_list.append(point_detail)
 
@@ -385,13 +390,36 @@ def _process_document_task(card: Dict[str, Any]) -> Dict[str, Any]:
 
 def _process_work_task(card: Dict[str, Any]) -> Dict[str, Any]:
     """处理作业类型任务"""
+    property_data = card.get("property", {}) if isinstance(card.get("property"), dict) else {}
+    status_values = [
+        card.get("status"),
+        card.get("statusText"),
+        card.get("workStatus"),
+        card.get("state"),
+        card.get("deadline"),
+        card.get("endTime"),
+        property_data.get("status"),
+        property_data.get("statusText"),
+        property_data.get("workStatus"),
+        property_data.get("state"),
+        property_data.get("deadline"),
+        property_data.get("endTime"),
+    ]
+    status_text = " ".join(str(value).strip() for value in status_values if value not in (None, ""))
+    is_expired = bool(card.get("isExpired") or property_data.get("isExpired")) or any(
+        marker in status_text for marker in ("已过期", "已截止", "已结束", "已关闭", "作业已过期")
+    )
     return {
         "type": "workid",
         "jobid": card.get("jobid", ""),
         "otherinfo": card.get("otherInfo", ""),
         "mid": card.get("mid", ""),
         "enc": card.get("enc", ""),
-        "aid": card.get("aid", "")
+        "aid": card.get("aid", ""),
+        "title": property_data.get("title", property_data.get("name", "")),
+        "status": status_text,
+        "deadline": card.get("deadline") or property_data.get("deadline", ""),
+        "is_expired": is_expired,
     }
 
 

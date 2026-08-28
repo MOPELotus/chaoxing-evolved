@@ -122,12 +122,33 @@ class StudyResult(Enum):
     FORBIDDEN = 1  # 403
     ERROR = 2
     TIMEOUT = 3
+    SKIPPED = 4  # e.g. a homework task that is already past its deadline
 
     def is_success(self):
-        return self == StudyResult.SUCCESS
+        return self in {StudyResult.SUCCESS, StudyResult.SKIPPED}
 
     def is_failure(self):
-        return self != StudyResult.SUCCESS
+        return not self.is_success()
+
+
+EXPIRED_TASK_MARKERS = (
+    "已过期",
+    "已截止",
+    "已结束",
+    "已关闭",
+    "作业过期",
+    "作业已过期",
+    "不在有效期",
+    "超过截止",
+)
+
+
+def is_expired_task_text(value: object) -> bool:
+    """Return whether a Chaoxing task/status string says it is expired."""
+    if value is None:
+        return False
+    text = " ".join(str(value).split())
+    return any(marker in text for marker in EXPIRED_TASK_MARKERS)
 
 
 class SignType(IntEnum):
@@ -923,11 +944,21 @@ class Chaoxing:
         if self.tiku.DISABLE or not self.tiku:
             return StudyResult.SUCCESS
 
+        # Some course cards expose the deadline/status before the work page is
+        # opened. Treat an explicitly expired homework as a legitimate skip;
+        # it cannot be submitted and should not make the whole course fail.
+        if is_expired_task_text(_job) or is_expired_task_text(_job_info):
+            logger.warning("章节检测任务已过期，跳过提交: {}", _job.get("jobid", ""))
+            return StudyResult.SKIPPED
+
         _session = SessionManager.get_session()
         _url = "https://mooc1.chaoxing.com/mooc-ans/api/work"
 
         def is_not_permission_error(exception):
             return not isinstance(exception, PermissionError)
+
+        class ExpiredHomeworkError(PermissionError):
+            """Stop the fetch retry loop when Chaoxing says the work expired."""
 
         @retry(
             stop=stop_after_attempt(3),
@@ -961,6 +992,9 @@ class Chaoxing:
             if '教师未创建完成该测验' in _resp.text:
                 raise PermissionError("教师未创建完成该测验")
 
+            if is_expired_task_text(_resp.text):
+                raise ExpiredHomeworkError("章节检测任务已过期")
+
             questions = decode_questions_info(_resp.text)
 
             if _resp.status_code == 200 and questions.get("questions"):
@@ -976,6 +1010,9 @@ class Chaoxing:
         try:
             final_resp, questions = fetch_response_with_retry()
         except PermissionError as e:
+            if isinstance(e, ExpiredHomeworkError):
+                logger.warning(f"章节检测任务已过期，按跳过处理: {e}")
+                return StudyResult.SKIPPED
             logger.warning(f"跳过章节检测: {e}")
             return StudyResult.SUCCESS
         except Exception as e:
@@ -1137,9 +1174,18 @@ class Chaoxing:
             if res_json["status"]:
                 logger.info(f'{"提交" if questions["pyFlag"] == "" else "保存"}答题成功 -> {res_json["msg"]}')
             else:
-                logger.error(f'{"提交" if questions["pyFlag"] == "" else "保存"}答题失败 -> {res_json["msg"]}')
+                message = str(res_json.get("msg", ""))
+                if is_expired_task_text(message) or message.strip() in {"无效的课程", "无效课程"}:
+                    logger.warning(
+                        f'章节检测任务不可提交（{message or "平台未返回原因"}），按过期任务跳过'
+                    )
+                    return StudyResult.SKIPPED
+                logger.error(f'{"提交" if questions["pyFlag"] == "" else "保存"}答题失败 -> {message}')
                 return StudyResult.ERROR
         else:
+            if is_expired_task_text(res.text):
+                logger.warning("章节检测任务已过期，按跳过处理")
+                return StudyResult.SKIPPED
             logger.error(f'{"提交" if questions["pyFlag"] == "" else "保存"}答题失败 -> {res.text}')
             return StudyResult.ERROR
         return StudyResult.SUCCESS
