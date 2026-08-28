@@ -24,6 +24,7 @@ class AnswerRequest(BaseModel):
 
     title: str = Field(min_length=1)
     options: str | list[str] = ""
+    option_items: list[str] = Field(default_factory=list)
     type: str = "unknown"
     images: list[ImageInput | str] = Field(default_factory=list)
 

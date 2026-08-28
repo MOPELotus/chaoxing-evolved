@@ -39,7 +39,7 @@ class OCSResponseEngineTests(unittest.TestCase):
         question = normalize_question(
             {
                 "type": "single",
-                "title": "看图 https://cx.test/stem.png 填写____",
+                "title": "看图 https://cx.test/stem.png 填写____，另一个答案写在（     ）",
                 "options": "红色 https://cx.test/a.png\n蓝色 https://cx.test/b.png",
                 "images": [
                     {"source_url": "https://cx.test/stem.png", "data_url": PIXEL},
@@ -50,6 +50,7 @@ class OCSResponseEngineTests(unittest.TestCase):
         )
         self.assertIn("[题干/材料图片 1]", question.title)
         self.assertIn("[BLANK_1]", question.title)
+        self.assertIn("（[BLANK_2]）", question.title)
         self.assertIn("[选项 A 图片 1]", question.options[0])
         self.assertEqual(
             [item.label for item in question.attachments],
@@ -74,6 +75,25 @@ class OCSResponseEngineTests(unittest.TestCase):
         self.assertIn("题干/材料图片 1", content[1]["text"])
         self.assertIn("选项 B 图片 1", content[3]["text"])
         self.assertEqual(warnings, [])
+
+    def test_structured_option_items_preserve_internal_newlines(self):
+        question = normalize_question(
+            {
+                "title": "选择图片",
+                "options": "旧的扁平字符串",
+                "option_items": [
+                    "选项 A 第一行\n选项 A 第二行 https://cx.test/a.png",
+                    "选项 B https://cx.test/b.png",
+                ],
+                "images": [
+                    {"source_url": "https://cx.test/a.png", "data_url": PIXEL},
+                    {"source_url": "https://cx.test/b.png", "data_url": PIXEL},
+                ],
+            }
+        )
+        self.assertEqual(len(question.options), 2)
+        self.assertIn("[选项 A 图片 1]", question.options[0])
+        self.assertIn("[选项 B 图片 1]", question.options[1])
 
     def test_declared_but_unreadable_images_fail_instead_of_guessing(self):
         def handler(request: httpx.Request) -> httpx.Response:

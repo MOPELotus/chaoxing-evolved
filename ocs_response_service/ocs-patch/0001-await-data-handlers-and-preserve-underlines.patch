@@ -1,8 +1,8 @@
 diff --git a/packages/core/src/core/answer-wrapper/answer.wrapper.handler.ts b/packages/core/src/core/answer-wrapper/answer.wrapper.handler.ts
-index 6a078a8..a7a8dde 100644
+index b4ba58e..2cf903b 100644
 --- a/packages/core/src/core/answer-wrapper/answer.wrapper.handler.ts
 +++ b/packages/core/src/core/answer-wrapper/answer.wrapper.handler.ts
-@@ -93,21 +93,21 @@ export async function defaultAnswerWrapperHandler(
+@@ -93,7 +93,7 @@ export async function defaultAnswerWrapperHandler(
  					// 构造请求数据
  					const data: Record<string, string> = Object.create({});
  					/** 构造一个请求数据 */
@@ -11,7 +11,7 @@ index 6a078a8..a7a8dde 100644
  						// 如果存在字段解析器
  						if (typeof (wrapperData as any)[key] === 'object' && Reflect.has((wrapperData as any)[key], 'handler')) {
  							// eslint-disable-next-line no-new-func
- 							const handler = Function(Reflect.get((wrapperData as any)[key], 'handler'))();
+@@ -101,13 +101,13 @@ export async function defaultAnswerWrapperHandler(
  							if (typeof handler !== 'function') {
  								throw new Error('data 字段解析器必须返回一个函数');
  							}
@@ -27,18 +27,46 @@ index 6a078a8..a7a8dde 100644
  
  					requestData = data;
  				} else {
+diff --git a/packages/scripts/src/projects/cx.ts b/packages/scripts/src/projects/cx.ts
+index 895f758..7a29735 100644
+--- a/packages/scripts/src/projects/cx.ts
++++ b/packages/scripts/src/projects/cx.ts
+@@ -835,6 +835,10 @@ function workOrExam(
+ 						return defaultAnswerWrapperHandler(answererWrappers, {
+ 							type,
+ 							title,
++							option_items:
++								type === 'completion'
++									? []
++									: ctx.elements.options.map((o) => optimizationElementWithImage(o, true).innerText),
+ 							options:
+ 								type === 'completion'
+ 									? ''
+@@ -1898,6 +1902,10 @@ const JobRunner = {
+ 						return defaultAnswerWrapperHandler(answererWrappers, {
+ 							type,
+ 							title,
++							option_items:
++								type === 'completion'
++									? []
++									: ctx.elements.options.map((o) => optimizationElementWithImage(o, true).innerText),
+ 							options:
+ 								type === 'completion'
+ 									? ''
 diff --git a/packages/scripts/src/utils/work.ts b/packages/scripts/src/utils/work.ts
-index 642fc61..3c165bd 100644
+index 0be89c4..cb51108 100644
 --- a/packages/scripts/src/utils/work.ts
 +++ b/packages/scripts/src/utils/work.ts
-@@ -188,4 +188,6 @@ export function optimizationElementWithImage(root: HTMLElement, clone_node: boole
+@@ -186,6 +186,8 @@ export function createWorkerControl(options: {
+  */
+ export function optimizationElementWithImage(root: HTMLElement, clone_node: boolean = false): HTMLElement {
  	const clone = clone_node ? (root.cloneNode(true) as HTMLElement) : root;
 +	const sourceElements = [root, ...Array.from(root.querySelectorAll<HTMLElement>('*'))];
 +	const clonedElements = [clone, ...Array.from(clone.querySelectorAll<HTMLElement>('*'))];
  	for (const img of Array.from(clone.querySelectorAll('img'))) {
  		// 如果已经存在识别结果，则不处理
  		if (
-@@ -206,5 +208,41 @@ export function optimizationElementWithImage(root: HTMLElement, clone_node: boole
+@@ -202,6 +204,63 @@ export function optimizationElementWithImage(root: HTMLElement, clone_node: bool
  		src.style.fontSize = '0px';
  		img.after(src);
  	}
@@ -59,6 +87,10 @@ index 642fc61..3c165bd 100644
 +		}
 +		const className = String(source.className || '').toLowerCase();
 +		const inlineStyle = String(source.getAttribute('style') || '').toLowerCase();
++		const inputType = String(source.getAttribute('type') || 'text').toLowerCase();
++		const blankInput =
++			(source.tagName === 'TEXTAREA' || source.getAttribute('contenteditable') === 'true' || source.tagName === 'INPUT') &&
++			!['hidden', 'radio', 'checkbox', 'button', 'submit'].includes(inputType);
 +		const bottomOnly =
 +			!!style &&
 +			parseFloat(style.borderBottomWidth || '0') > 0 &&
@@ -71,12 +103,30 @@ index 642fc61..3c165bd 100644
 +			/text-decoration(?:-line)?\s*:\s*underline/.test(inlineStyle) ||
 +			style?.textDecorationLine?.includes('underline') ||
 +			bottomOnly;
-+		if (!underlined) continue;
-+		const text = String(target.textContent || '').trim();
++		if (!underlined && !blankInput) continue;
++		const text = blankInput ? '' : String(target.textContent || '').trim();
 +		const marker = text
 +			? ` [UNDERLINE]${text}[/UNDERLINE] `
 +			: ` [BLANK_${++blankIndex}] `;
 +		target.replaceWith(document.createTextNode(marker));
 +	}
++
++	// 有些题把答案区写成“(&nbsp; &nbsp;)”，既没有 input，也没有
++	// underline 样式。保留括号，仅把其中的连续空白转换成挖空标记。
++	const textWalker = document.createTreeWalker(clone, NodeFilter.SHOW_TEXT);
++	const textNodes: Text[] = [];
++	let current = textWalker.nextNode();
++	while (current) {
++		if (current instanceof Text) textNodes.push(current);
++		current = textWalker.nextNode();
++	}
++	for (const node of textNodes) {
++		node.nodeValue = String(node.nodeValue || '').replace(
++			/([（(\[])[\u00a0 \t]{2,}([）)\]])|_{2,}|＿{2,}|﹍{2,}/g,
++			(_matched, open, close) =>
++				open ? `${open}[BLANK_${++blankIndex}]${close}` : ` [BLANK_${++blankIndex}] `
++		);
++	}
  	return clone;
  }
+ 

@@ -13,6 +13,9 @@
     "data": {
       "title": "${title}",
       "options": "${options}",
+      "option_items": {
+        "handler": "return (env) => Array.isArray(env.option_items) ? env.option_items : []"
+      },
       "type": "${type}"
     },
     "handler": "return (res) => res.code === 1 ? [res.question, res.answer, { confidence: res.confidence, model: res.model, warnings: res.warnings }] : [res.message || 'Responses AI 题库请求失败', undefined]"

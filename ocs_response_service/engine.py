@@ -14,7 +14,7 @@ import httpx
 from .config import Settings
 
 URL_PATTERN = re.compile(r"https?://[^\s<>\"'\])}，。；;]+", re.IGNORECASE)
-BLANK_PATTERN = re.compile(r"(?:_{3,}|＿{2,}|﹍{2,})")
+BLANK_PATTERN = re.compile(r"([\(（\[])[ \t\xa0]{2,}([\)）\]])|(?:_{3,}|＿{2,}|﹍{2,})")
 IMAGE_DATA_PATTERN = re.compile(
     r"^data:(image/[a-z0-9.+-]+);base64,([a-z0-9+/=\r\n]+)$", re.IGNORECASE
 )
@@ -70,10 +70,13 @@ def _normalize_blanks(value: str) -> str:
     existing = [int(item) for item in re.findall(r"\[BLANK_(\d+)\]", value, re.IGNORECASE)]
     counter = max(existing, default=0)
 
-    def replace(_: re.Match[str]) -> str:
+    def replace(match: re.Match[str]) -> str:
         nonlocal counter
         counter += 1
-        return f"[BLANK_{counter}]"
+        marker = f"[BLANK_{counter}]"
+        if match.group(1):
+            return f"{match.group(1)}{marker}{match.group(2)}"
+        return marker
 
     return BLANK_PATTERN.sub(replace, value)
 
@@ -100,7 +103,7 @@ def _incoming_attachments(value: Any) -> list[Attachment]:
 
 def normalize_question(payload: Mapping[str, Any]) -> NormalizedQuestion:
     raw_title = str(payload.get("title") or "").strip()
-    raw_options = _split_options(payload.get("options"))
+    raw_options = _split_options(payload.get("option_items") or payload.get("options"))
     supplied = _incoming_attachments(payload.get("images") or payload.get("attachments"))
 
     discovered: list[Attachment] = []

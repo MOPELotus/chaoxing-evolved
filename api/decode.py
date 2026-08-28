@@ -676,7 +676,15 @@ def _rich_node_text(node, font_decoder=None) -> tuple[str, int, int]:
             value = str(element).replace('\xa0', ' ')
             if font_decoder:
                 value = font_decoder.decode(value)
-            return re.sub(r'_{2,}|＿{2,}', lambda _m: marker(), value)
+            blank_pattern = re.compile(r'([\(（\[])[ \t]{2,}([\)）\]])|_{2,}|＿{2,}|﹍{2,}')
+
+            def replace_blank(match) -> str:
+                blank = marker().strip()
+                if match.group(1):
+                    return f'{match.group(1)}{blank}{match.group(2)}'
+                return f' {blank} '
+
+            return blank_pattern.sub(replace_blank, value)
         if not isinstance(element, Tag):
             return ''
         if element.name == 'img':
