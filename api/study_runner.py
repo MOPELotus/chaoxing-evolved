@@ -34,6 +34,7 @@ class ChapterResult(enum.Enum):
     ERROR = 1
     NOT_OPEN = 2
     PENDING = 3
+    FATAL = 4
 
 
 def log_error(func):
@@ -210,6 +211,8 @@ class JobProcessor:
         self.max_tries = max(1, min(3, int(config.get("challenge_retry_attempts", 3) or 3)))
         self.tasks = tasks
         self.failed_tasks: list[ChapterTask] = []
+        self.abort_event = threading.Event()
+        self.fatal_error = ""
         self.task_queue: PriorityQueue[ChapterTask] = PriorityQueue()
         self.retry_queue: PriorityQueue[ChapterTask] = PriorityQueue()
         self.threads: list[threading.Thread] = []
@@ -246,14 +249,22 @@ class JobProcessor:
             try:
                 task = self.task_queue.get()
             except ShutDown:
-                logger.info("任务队列已关闭")
                 return
+
+            if self.abort_event.is_set():
+                self.task_queue.task_done()
+                continue
 
             task.result = process_chapter(
                 self.chaoxing, self.course, task.point, self.speed, self.worker_num,
                 self.config.get("reading_duration_seconds", 0),
                 task.tries,
+                self.abort_event,
             )
+
+            if self.abort_event.is_set() and task.result != ChapterResult.FATAL:
+                self.task_queue.task_done()
+                continue
 
             match task.result:
                 case ChapterResult.SUCCESS:
@@ -293,6 +304,19 @@ class JobProcessor:
                         continue
                     self.retry_queue.put(task)
 
+                case ChapterResult.FATAL:
+                    self.fatal_error = str(
+                        task.point.get("_fatal_error") or "任务执行遇到不可恢复的阻断"
+                    )
+                    self.abort_event.set()
+                    self.failed_tasks.append(task)
+                    logger.error(
+                        "课程任务已停止: {} - {}",
+                        task.point.get("title", ""),
+                        self.fatal_error,
+                    )
+                    self.task_queue.task_done()
+
                 case _:
                     logger.error("Invalid task state {} for task {}", task.result, task.point["title"])
                     self.failed_tasks.append(task)
@@ -303,6 +327,10 @@ class JobProcessor:
         try:
             while True:
                 task = self.retry_queue.get()
+                if self.abort_event.is_set():
+                    self.retry_queue.task_done()
+                    self.task_queue.task_done()
+                    continue
                 self.task_queue.put(task)
                 self.retry_queue.task_done()
                 self.task_queue.task_done()
@@ -319,8 +347,11 @@ def process_chapter(
     max_workers: int = 5,
     reading_duration_seconds: int = 0,
     challenge_attempt: int = 0,
+    abort_event: threading.Event | None = None,
 ) -> ChapterResult:
     logger.info(f'当前章节: {point["title"]}')
+    if abort_event is not None and abort_event.is_set():
+        return ChapterResult.ERROR
     if is_expired_task_text(point.get("title")) or is_expired_task_text(point.get("status")):
         logger.warning("章节任务已过期，按完成处理: {}", point.get("title", ""))
         return ChapterResult.SUCCESS
@@ -329,7 +360,15 @@ def process_chapter(
         return ChapterResult.SUCCESS
 
     chaoxing.rate_limiter.limit_rate(random_time=True, random_min=0, random_max=0.2)
+    if abort_event is not None and abort_event.is_set():
+        return ChapterResult.ERROR
     jobs, job_info = chaoxing.get_job_list(course, point)
+
+    if job_info.get("fatal_error"):
+        point["_fatal_error"] = str(job_info["fatal_error"])
+        if abort_event is not None:
+            abort_event.set()
+        return ChapterResult.FATAL
 
     if job_info.get("notOpen", False):
         return ChapterResult.NOT_OPEN
@@ -400,6 +439,8 @@ def process_course(chaoxing: Chaoxing, course: dict[str, Any], config: dict[str,
 
     processor = JobProcessor(chaoxing, course, tasks, config)
     processor.run()
+    if processor.fatal_error:
+        raise RuntimeError(f"课程 [{course['title']}] 已停止: {processor.fatal_error}")
     if processor.failed_tasks:
         failed_titles = ", ".join(task.point.get("title", "") for task in processor.failed_tasks)
         raise RuntimeError(f"课程 [{course['title']}] 存在未完成章节: {failed_titles}")
@@ -471,7 +512,6 @@ def run_loaded_profile(profile: dict, global_settings: dict | None = None) -> No
         raise
     except BaseException as exc:
         logger.error(f"错误: {type(exc).__name__}: {exc}")
-        logger.error(traceback.format_exc())
         raise
 
 

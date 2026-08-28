@@ -21,8 +21,17 @@ def main(argv: list[str] | None = None) -> int:
         print("桌面运行器需要传入唯一的配置名称。", file=sys.stderr)
         return 2
 
-    run_named_profile(args[0])
-    return 0
+    try:
+        run_named_profile(args[0])
+        return 0
+    except KeyboardInterrupt:
+        return 130
+    except BaseException:
+        # run_loaded_profile has already emitted a concise error summary. The
+        # desktop manager only needs a non-zero exit code; printing Python's
+        # full unhandled traceback here would duplicate the same failure and
+        # flood the per-run log.
+        return 1
 
 
 if __name__ == "__main__":

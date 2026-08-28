@@ -101,7 +101,8 @@ class CxCaptcha:
         random_t = randint(0, 2147483647)
 
         res = self.s.get(api, params={'t': random_t})
-        if res.status_code == 200 and res.headers['Content-Type'] == 'image/png':
+        content_type = res.headers.get('Content-Type', '').split(';', 1)[0].strip().lower()
+        if res.status_code == 200 and content_type == 'image/png':
             return res.content
         else:
             # 提供的Cookies或UA存在问题，导致未能正常获取验证码内容
@@ -122,11 +123,11 @@ class CxCaptcha:
             'ucode': cap_token,
             'app': 0
         }
-        res = self.s.get(api, params=params)
-        if res.status_code == 302:
-            return True
-        else:
-            return False
+        # requests follows redirects by default, which hides the successful
+        # 302 response this endpoint uses. Keep the redirect visible so the
+        # caller can reliably distinguish a passed captcha from a rejected one.
+        res = self.s.get(api, params=params, allow_redirects=False)
+        return res.status_code in {301, 302, 303, 307, 308}
     def recognition(self, img: bytes) -> str:
         """
         使用 DdddOcr 对验证码图片进行识别。

@@ -337,6 +337,58 @@ class Chaoxing:
         self.rollback_times = 0
         self.rate_limiter = RateLimiter(0.5)  # 其他接口速率限制比较松
         self.video_log_limiter = RateLimiter(2)  # 上报进度极其容易卡验证码，限制2s一次
+        self._captcha_lock = threading.Lock()
+        self._fatal_task_error = ""
+
+    @staticmethod
+    def _is_captcha_response(response: requests.Response) -> bool:
+        text = response.text or ""
+        return (
+            response.status_code in {202, 403}
+            or "【9010】" in text
+            or "processVerify" in text
+            or "请输入图片中的验证码" in text
+            or "验证码" in text
+        )
+
+    def _try_pass_captcha(
+        self,
+        session: requests.Session,
+        user_agent: str | None = None,
+        attempts: int = 3,
+    ) -> bool:
+        """Use the shared OCR instance and copy verified cookies back."""
+        try:
+            from api.captcha import CxCaptcha, ocr_init
+
+            ocr_inst = getattr(self, "_ocr", None)
+            if ocr_inst is None:
+                ocr_inst = ocr_init()
+                if ocr_inst is not None:
+                    self._ocr = ocr_inst
+            if ocr_inst is None:
+                logger.error("验证码 OCR 不可用，无法自动通过验证")
+                return False
+
+            cookies_str = "; ".join(f"{key}={value}" for key, value in session.cookies.items())
+            solver = CxCaptcha(
+                user_agent=user_agent or session.headers.get("User-Agent") or gc.HEADERS.get("User-Agent", ""),
+                cookies=cookies_str,
+                ocr=ocr_inst,
+            )
+            for attempt in range(max(1, attempts)):
+                logger.info("第 {} 次尝试自动识别验证码...", attempt + 1)
+                if solver.try_pass():
+                    session.cookies.update(solver.s.cookies)
+                    logger.success("验证码通关成功，正在重试原请求")
+                    return True
+                if attempt + 1 < attempts:
+                    time.sleep(2)
+            logger.error("验证码自动识别连续失败，需要手动完成验证")
+            return False
+        except Exception as exc:
+            logger.error("验证码自动验证异常: {}", exc)
+            return False
 
     def login(self, login_with_cookies=False):
         if login_with_cookies:
@@ -558,6 +610,8 @@ class Chaoxing:
         return decode_course_point(_resp.text)
 
     def get_job_list(self, course: dict, point: dict) -> tuple[list[dict], dict]:
+        if self._fatal_task_error:
+            return [], {"fatal_error": self._fatal_task_error}
         _session = SessionManager.get_session()
         self.rate_limiter.limit_rate()
         job_list = []
@@ -579,10 +633,45 @@ class Chaoxing:
 
             cards_params.update({"num": _possible_num})
             _resp = _session.get("https://mooc1.chaoxing.com/mooc-ans/knowledge/cards", params=cards_params)
-            if _resp.status_code != 200:
-                logger.error(f"未知错误: {_resp.status_code} 正在跳过")
-                logger.error(_resp.text)
-                return [], {}
+            if _resp.status_code != 200 or self._is_captcha_response(_resp):
+                captcha_blocked = self._is_captcha_response(_resp)
+                if captcha_blocked:
+                    # A course may dispatch many chapter workers at once. Let
+                    # only one of them solve the shared account captcha; later
+                    # workers first retry in case the first worker already
+                    # cleared it.
+                    with self._captcha_lock:
+                        if self._fatal_task_error:
+                            return [], {"fatal_error": self._fatal_task_error}
+                        _resp = _session.get(
+                            "https://mooc1.chaoxing.com/mooc-ans/knowledge/cards",
+                            params=cards_params,
+                        )
+                        captcha_blocked = self._is_captcha_response(_resp)
+                        if _resp.status_code != 200 or captcha_blocked:
+                            logger.warning(
+                                "任务卡接口触发验证码拦截（HTTP {}），正在调用内置 OCR",
+                                _resp.status_code,
+                            )
+                            if self._try_pass_captcha(_session):
+                                _resp = _session.get(
+                                    "https://mooc1.chaoxing.com/mooc-ans/knowledge/cards",
+                                    params=cards_params,
+                                )
+                                captcha_blocked = self._is_captcha_response(_resp)
+                        if _resp.status_code == 200 and not captcha_blocked:
+                            logger.info("验证码通过，任务卡原请求重试成功")
+                reason = (
+                    f"任务卡接口验证码自动处理失败（HTTP {_resp.status_code}）"
+                    if captcha_blocked
+                    else f"任务卡接口返回 HTTP {_resp.status_code}"
+                )
+                # Never dump the response body here. Chaoxing's verification
+                # page contains a large inline base64 image and would flood
+                # every desktop worker log with thousands of characters.
+                if _resp.status_code != 200 or captcha_blocked:
+                    self._fatal_task_error = reason
+                    return [], {"fatal_error": reason, "captcha_required": captcha_blocked}
 
             _job_list, _job_info = decode_course_card(_resp.text)
             if _job_info.get("notOpen", False):
@@ -667,36 +756,16 @@ class Chaoxing:
         def perform_request(rt_val):
             params.update({"rt": rt_val, "_t": get_timestamp()})
             res = _session.get(_url, params=params, headers=headers)
-            if res.status_code == 403 or '验证码' in res.text or 'validate' in res.text:
-                logger.warning("检测到验证码拦截，正在尝试自动通过验证码...")
-                try:
-                    from api.captcha import CxCaptcha
-                    cookies_str = "; ".join([f"{k}={v}" for k, v in _session.cookies.items()])
-                    ua = headers.get("User-Agent", gc.HEADERS.get("User-Agent"))
-                    ocr_inst = getattr(self, '_ocr', None)
-                    if ocr_inst is None:
-                        from api.captcha import ocr_init
-                        ocr_inst = ocr_init()
-                        if ocr_inst:
-                            self._ocr = ocr_inst
-                    captcha_solver = CxCaptcha(user_agent=ua, cookies=cookies_str, ocr=ocr_inst)
-                    solved = False
-                    for attempt in range(3):
-                        logger.info(f"第 {attempt + 1} 次尝试通关验证码...")
-                        if captcha_solver.try_pass():
-                            logger.success("验证码通关成功！")
-                            solved = True
-                            break
-                        else:
-                            logger.warning("验证码验证失败，正在重试...")
-                            time.sleep(2)
-                    if solved:
-                        _session.cookies.update(captcha_solver.s.cookies)
-                        res = _session.get(_url, params=params, headers=headers)
-                    else:
-                        logger.error("多次验证码通关失败，可能需要手动干预。")
-                except Exception as e:
-                    logger.error(f"验证码通关逻辑异常: {e}")
+            if self._is_captcha_response(res) or 'validate' in res.text:
+                with self._captcha_lock:
+                    res = _session.get(_url, params=params, headers=headers)
+                    if self._is_captcha_response(res) or 'validate' in res.text:
+                        logger.warning("检测到验证码拦截，正在尝试自动通过验证码...")
+                        if self._try_pass_captcha(
+                            _session,
+                            user_agent=headers.get("User-Agent", gc.HEADERS.get("User-Agent")),
+                        ):
+                            res = _session.get(_url, params=params, headers=headers)
             return res
 
         rt = _job['rt']

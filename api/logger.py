@@ -1,3 +1,4 @@
+import os
 import sys
 
 from loguru import logger
@@ -35,4 +36,9 @@ def tqdm_sink(msg):
 
 logger.remove()
 logger.add(tqdm_sink, colorize=True, enqueue=True)
-logger.add("chaoxing.log", rotation="10 MB", level="TRACE", encoding="utf8")
+# Desktop-managed workers already have stdout/stderr captured into an isolated
+# per-run log by RunManager.  Opening the shared rotating file here as well
+# makes the UI process and one or more workers race to rename chaoxing.log on
+# Windows, producing an endless WinError 32 logging traceback.
+if os.environ.get("DESKTOP_MANAGED_RUN") != "1":
+    logger.add("chaoxing.log", rotation="10 MB", level="TRACE", encoding="utf8")
