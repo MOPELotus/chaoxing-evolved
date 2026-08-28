@@ -50,20 +50,6 @@ jobs:
             python_arch: arm64
             build_arch: arm64
             runner_key: win11arm
-          - id: linux-x64
-            platform_label: Linux x64
-            os_family: linux
-            runs_on: ubuntu-24.04
-            python_arch: x64
-            build_arch: x64
-            runner_key: ubuntu2404
-          - id: linux-arm64
-            platform_label: Linux ARM64
-            os_family: linux
-            runs_on: ubuntu-24.04-arm
-            python_arch: arm64
-            build_arch: arm64
-            runner_key: ubuntu2404arm
     env:
       NUITKA_CACHE_DIR: ${{ github.workspace }}/.nuitka-cache
       NUITKA_CACHE_DIR_DOWNLOADS: ${{ github.workspace }}/.nuitka-cache/downloads
@@ -109,7 +95,16 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          python -m pip install --prefer-binary -r requirements.txt nuitka=="${NUITKA_VERSION}" ordered-set zstandard
+          if [[ "${{ matrix.build_arch }}" == "arm64" ]]; then
+            # ddddocr pulls opencv-python, which currently has no usable
+            # Windows ARM64 wheel and falls back to a failing NumPy build.
+            # Captcha OCR is optional at runtime, so keep the ARM64 desktop
+            # build installable and let captcha.py disable OCR gracefully.
+            grep -viE '^ddddocr([<=>].*)?$' requirements.txt > requirements-release-arm64.txt
+            python -m pip install --prefer-binary -r requirements-release-arm64.txt nuitka=="${NUITKA_VERSION}" ordered-set zstandard
+          else
+            python -m pip install --prefer-binary -r requirements.txt nuitka=="${NUITKA_VERSION}" ordered-set zstandard
+          fi
 
       - name: Install Linux packaging dependencies
         if: ${{ matrix.os_family == 'linux' }}
