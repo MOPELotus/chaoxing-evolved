@@ -1,0 +1,115 @@
+name: Build Windows artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Version label used in the archive name
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.13"
+  NUITKA_VERSION: "2.8.10"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_NO_PYTHON_VERSION_WARNING: "1"
+
+jobs:
+  build:
+    name: Build Windows ${{ matrix.build_arch }}
+    runs-on: ${{ matrix.runs_on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: windows-x64
+            build_arch: x64
+            runs_on: windows-2022
+            python_arch: x64
+            runner_key: win2022
+          - id: windows-arm64
+            build_arch: arm64
+            runs_on: windows-11-arm
+            python_arch: arm64
+            runner_key: win11arm
+    env:
+      NUITKA_CACHE_DIR: ${{ github.workspace }}/.nuitka-cache
+      NUITKA_CACHE_DIR_DOWNLOADS: ${{ github.workspace }}/.nuitka-cache/downloads
+      NUITKA_CACHE_DIR_BYTECODE: ${{ github.workspace }}/.nuitka-cache/bytecode
+      NUITKA_CACHE_DIR_DLL_DEPENDENCIES: ${{ github.workspace }}/.nuitka-cache/dll-dependencies
+      NUITKA_CACHE_DIR_CLCACHE: ${{ github.workspace }}/.nuitka-cache/clcache
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          architecture: ${{ matrix.python_arch }}
+          cache: pip
+
+      - name: Restore Nuitka cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .nuitka-cache
+          key: ${{ runner.os }}-${{ matrix.runner_key }}-${{ matrix.build_arch }}-nuitka-v2-${{ env.NUITKA_VERSION }}-${{ hashFiles('requirements.txt') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.runner_key }}-${{ matrix.build_arch }}-nuitka-v2-${{ env.NUITKA_VERSION }}-${{ hashFiles('requirements.txt') }}-
+            ${{ runner.os }}-${{ matrix.runner_key }}-${{ matrix.build_arch }}-nuitka-v2-${{ env.NUITKA_VERSION }}-
+            ${{ runner.os }}-${{ matrix.runner_key }}-${{ matrix.build_arch }}-nuitka-v2-
+
+      - name: Prepare Nuitka cache directories
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path `
+            $env:NUITKA_CACHE_DIR, `
+            $env:NUITKA_CACHE_DIR_DOWNLOADS, `
+            $env:NUITKA_CACHE_DIR_BYTECODE, `
+            $env:NUITKA_CACHE_DIR_DLL_DEPENDENCIES, `
+            $env:NUITKA_CACHE_DIR_CLCACHE | Out-Null
+
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          if [[ "${{ matrix.build_arch }}" == "arm64" ]]; then
+            # ddddocr currently has no usable Windows ARM64 dependency chain.
+            # OCR is optional and api.captcha.py already degrades gracefully.
+            grep -viE '^ddddocr([<=>].*)?$' requirements.txt > requirements-release-arm64.txt
+            python -m pip install --prefer-binary -r requirements-release-arm64.txt nuitka=="${NUITKA_VERSION}" ordered-set zstandard
+          else
+            python -m pip install --prefer-binary -r requirements.txt nuitka=="${NUITKA_VERSION}" ordered-set zstandard
+          fi
+
+      - name: Build archive
+        shell: pwsh
+        run: |
+          .\scripts\build_release_local.ps1 `
+            -Tag "${{ inputs.tag_name }}" `
+            -Architecture "${{ matrix.build_arch }}" `
+            -OutputDir "build-${{ matrix.id }}" `
+            -ReleaseDir "release-${{ matrix.id }}"
+
+      - name: Save Nuitka cache
+        if: ${{ always() && !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: .nuitka-cache
+          key: ${{ runner.os }}-${{ matrix.runner_key }}-${{ matrix.build_arch }}-nuitka-v2-${{ env.NUITKA_VERSION }}-${{ hashFiles('requirements.txt') }}-${{ github.sha }}
+
+      - name: Upload zip
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaoxing-evolved-windows-${{ matrix.build_arch }}-${{ inputs.tag_name }}
+          path: release-${{ matrix.id }}/*.zip
+          if-no-files-found: error
+          retention-days: 7
