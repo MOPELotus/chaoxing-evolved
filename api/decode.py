@@ -550,7 +550,8 @@ def _process_question(div_tag, font_decoder=None) -> Dict[str, Any]:
         }
         q_options = [f"左{i + 1}: {item}" for i, item in enumerate(matching_groups["left"])]
         q_options.extend(f"右{i + 1}: {item}" for i, item in enumerate(matching_groups["right"]))
-    q_options = '\n'.join(q_options)
+    option_items = list(q_options)
+    q_options = '\n'.join(option_items)
 
     material_nodes = div_tag.select('.material, .question-material, .data, .case, [class*="material"]')
     material_parts = []
@@ -568,6 +569,7 @@ def _process_question(div_tag, font_decoder=None) -> Dict[str, Any]:
         "id": question_id,
         "title": q_title,
         "options": q_options,
+        "option_items": option_items,
         "type": q_type,
         "kind": q_type,
         "material": "\n".join(material_parts),

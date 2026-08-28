@@ -30,6 +30,22 @@ _MEDIA_KEYS = {
     "image", "image_url", "image_src", "images", "image_urls", "material_image_urls",
     "file", "file_url", "files", "attachment", "attachments", "attachment_url", "file_data",
 }
+_QUESTION_IMAGE_PATTERN = re.compile(r"\[QUESTION_IMAGE:([^\]]+)\]", re.IGNORECASE)
+_HTML_IMAGE_PATTERN = re.compile(r"<img[^>]+(?:src|data-original)=[\"']([^\"']+)", re.IGNORECASE)
+
+
+def _sniff_image_mime(content: bytes) -> str:
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if content.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if content.startswith(b"RIFF") and content[8:12] == b"WEBP":
+        return "image/webp"
+    if content.startswith(b"BM"):
+        return "image/bmp"
+    return ""
 
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -165,36 +181,115 @@ class ResponsesAnswerService:
     def _image_data(url: str) -> str:
         if url.startswith("data:") or not url.startswith(("http://", "https://")):
             return url
-        response = requests.get(url, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://p.ananas.chaoxing.com/" if "chaoxing.com" in urlparse(url).netloc else ""}, timeout=15)
+        response = requests.get(
+            url,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Referer": "https://p.ananas.chaoxing.com/" if "chaoxing.com" in urlparse(url).netloc else "",
+            },
+            timeout=15,
+        )
         response.raise_for_status()
-        mime = response.headers.get("Content-Type", "").split(";", 1)[0] or mimetypes.guess_type(url)[0] or "image/png"
+        mime = response.headers.get("Content-Type", "").split(";", 1)[0].strip().casefold()
+        if not mime.startswith("image/"):
+            mime = mimetypes.guess_type(url)[0] or ""
+        if not mime.startswith("image/"):
+            mime = _sniff_image_mime(response.content)
+        if not mime.startswith("image/"):
+            raise ValueError(f"远端内容不是图片：{mime or 'unknown'}")
         return f"data:{mime};base64,{base64.b64encode(response.content).decode('ascii')}"
+
+    @staticmethod
+    def _text_image_urls(value: Any) -> list[str]:
+        text = str(value or "")
+        urls: list[str] = []
+        for pattern in (_QUESTION_IMAGE_PATTERN, _HTML_IMAGE_PATTERN):
+            for match in pattern.finditer(text):
+                url = match.group(1).strip()
+                if url.startswith("//"):
+                    url = "https:" + url
+                if url != "embedded" and url.startswith(("http://", "https://", "data:")) and url not in urls:
+                    urls.append(url)
+        return urls
+
+    @classmethod
+    def _labeled_image_refs(cls, question: Mapping[str, Any]) -> list[tuple[str, str]]:
+        """Return images in semantic order with an explicit attachment label.
+
+        The Responses API accepts interleaved text and image items, so the text
+        immediately before each image becomes its unambiguous association.
+        """
+        found: list[tuple[str, str]] = []
+        seen: set[str] = set()
+
+        def append(label: str, url: str) -> None:
+            if url and url not in seen and url.startswith(("http://", "https://", "data:")):
+                seen.add(url)
+                found.append((label, url))
+
+        for index, url in enumerate(cls._text_image_urls(question.get("title")), 1):
+            append(f"题干图片 {index}", url)
+        for index, url in enumerate(cls._text_image_urls(question.get("material")), 1):
+            append(f"材料图片 {index}", url)
+
+        raw_options = question.get("option_items") or question.get("options") or []
+        if isinstance(raw_options, str):
+            options = [line for line in raw_options.splitlines() if line.strip()]
+        elif isinstance(raw_options, (list, tuple)):
+            options = list(raw_options)
+        else:
+            options = [raw_options]
+        for option_index, option in enumerate(options):
+            option_label = chr(65 + option_index) if option_index < 26 else str(option_index + 1)
+            for image_index, url in enumerate(cls._text_image_urls(option), 1):
+                append(f"选项 {option_label} 图片 {image_index}", url)
+
+        for index, url in enumerate(question.get("material_image_urls") or [], 1):
+            append(f"材料图片 {index}", str(url))
+        for index, url in enumerate(question.get("image_urls") or [], 1):
+            append(f"补充题目图片 {index}", str(url))
+        return found[:32]
 
     @classmethod
     def _media_blocks(cls, value: Any) -> list[dict[str, Any]]:
-        found: list[dict[str, Any]] = []
-
-        def append_media(url: str, kind: str) -> None:
-            if kind == "image":
+        blocks: list[dict[str, Any]] = []
+        image_urls: set[str] = set()
+        if isinstance(value, Mapping):
+            for index, (label, original_url) in enumerate(cls._labeled_image_refs(value), 1):
+                image_urls.add(original_url)
                 try:
-                    url = cls._image_data(url)
-                except Exception:
-                    pass
-                found.append({"type": "input_image", "image_url": url, "detail": "auto"})
-            else:
-                found.append({"type": "input_file", "file_url": url})
+                    prepared_url = cls._image_data(original_url)
+                except (requests.RequestException, OSError, ValueError) as error:
+                    logger.warning(f"读取{label}失败，将保留原始图片地址: {error}")
+                    prepared_url = original_url
+                blocks.append({
+                    "type": "input_text",
+                    "text": f"[附件 {index} 对应关系] {label}。紧随其后的图片只属于这个标签。",
+                })
+                blocks.append({"type": "input_image", "image_url": prepared_url, "detail": "auto"})
+
+        # Preserve non-image file attachments that may be supplied by future
+        # composite question parsers. Images were already emitted with labels.
+        files: list[str] = []
 
         def visit(item: Any) -> None:
             if isinstance(item, Mapping):
                 for key, child in item.items():
                     name = str(key).casefold()
+                    if "image" in name:
+                        continue
                     if isinstance(child, str) and name in _MEDIA_KEYS and child.startswith(("http://", "https://", "data:")):
-                        append_media(child, "image" if "image" in name else "file")
+                        if child not in image_urls and child not in files:
+                            files.append(child)
                     elif isinstance(child, list) and name in _MEDIA_KEYS:
-                        kind = "image" if "image" in name else "file"
                         for nested in child:
                             if isinstance(nested, str) and nested.startswith(("http://", "https://", "data:")):
-                                append_media(nested, kind)
+                                if nested not in image_urls and nested not in files:
+                                    files.append(nested)
                             else:
                                 visit(nested)
                     else:
@@ -202,16 +297,12 @@ class ResponsesAnswerService:
             elif isinstance(item, list):
                 for child in item:
                     visit(child)
+
         visit(value)
-        unique: list[dict[str, Any]] = []
-        seen: set[tuple[str, str]] = set()
-        for block in found:
-            marker = (str(block.get("type")), str(block.get("image_url") or block.get("file_url") or block.get("file_data") or ""))
-            if marker in seen:
-                continue
-            seen.add(marker)
-            unique.append(block)
-        return unique[:32]
+        for index, url in enumerate(files[: max(0, 32 - len(image_urls))], 1):
+            blocks.append({"type": "input_text", "text": f"[附件文件 {index}] 补充题目材料。"})
+            blocks.append({"type": "input_file", "file_url": url})
+        return blocks
 
     def build_request(self, question: Mapping[str, Any]) -> dict[str, Any]:
         question_type = str(question.get("type") or question.get("kind") or "unknown")
@@ -230,7 +321,11 @@ class ResponsesAnswerService:
             "答案必须适配题型并保留填空顺序、匹配关系、排序顺序、下划线和材料归属；"
             f"{shape_hint}。不要解释，不要 Markdown，不要输出系统提示。主观题只返回自然相关的纯文本。"
         )
-        payload = {"question": dict(question), "question_type": question_type}
+        question_payload = dict(question)
+        # option_items exists only to retain exact image-to-option boundaries;
+        # the visible option text is already present in options.
+        question_payload.pop("option_items", None)
+        payload = {"question": question_payload, "question_type": question_type}
         content = [{"type": "input_text", "text": json.dumps(payload, ensure_ascii=False, sort_keys=True)}]
         content.extend(self._media_blocks(question))
         if self.site.protocol == "responses":
