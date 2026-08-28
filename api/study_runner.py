@@ -14,6 +14,7 @@ from tqdm import tqdm
 
 from api.answer import Tiku
 from api.base import Account, Chaoxing, StudyResult, is_expired_task_text
+from api.course_selection import course_class_key, course_matches_selection
 from api.exceptions import LoginError
 from api.json_store import (
     build_config_sections,
@@ -136,6 +137,8 @@ def _normalize_common_config(section: dict[str, Any]) -> dict[str, Any]:
         "jobs": max(1, int(section.get("jobs", 4) or 4)),
         "notopen_action": str(section.get("notopen_action", "retry") or "retry").strip(),
         "challenge_retry_attempts": max(1, min(3, int(section.get("challenge_retry_attempts", 3) or 3))),
+        "add_learning_count": to_bool(section.get("add_learning_count", False)),
+        "target_count": max(0, int(section.get("target_count", 100) or 0)),
         "reading_duration_seconds": max(0, int(section.get("reading_duration_seconds", 0) or 0)),
     }
 
@@ -232,8 +235,7 @@ def process_job(
         logger.trace(f"识别到阅读任务, 任务章节: {course['title']}")
         result = chaoxing.study_read(course, job, job_info)
         if result.is_success() and reading_duration_seconds > 0:
-            logger.info(f"阅读任务停留 {reading_duration_seconds} 秒以满足阅读时长要求")
-            time.sleep(reading_duration_seconds)
+            return chaoxing.study_read_duration(course, job_info, reading_duration_seconds)
         return result
 
     if job["type"] == "live":
@@ -534,8 +536,8 @@ def process_course(chaoxing: Chaoxing, course: dict[str, Any], config: dict[str,
         failed_titles = ", ".join(task.point.get("title", "") for task in processor.failed_tasks)
         raise RuntimeError(f"课程 [{course['title']}] 存在未完成章节: {failed_titles}")
     if to_bool(config.get("add_learning_count", False)):
-        target_count = max(0, int(config.get("target_count", 100) or 100))
-        logger.info(f"开始增加课程章节学习次数，目标总次数: {target_count}")
+        target_count = max(0, int(config.get("target_count", 100) or 0))
+        logger.info(f"开始增加课程章节学习次数，本次计划: {target_count}")
         result = chaoxing.increase_chapter_learning_count(course, point_list["points"], target_count)
         if result.is_failure():
             raise RuntimeError(f"课程 [{course['title']}] 章节学习次数增加失败")
@@ -547,14 +549,17 @@ def filter_courses(all_course: list[dict], course_list: list[str]) -> list[dict]
         logger.info("当前未指定课程范围，默认处理全部课程。")
         return all_course
 
-    selected_ids = {str(course_id).strip() for course_id in course_list if str(course_id).strip()}
     course_task = []
-    seen_course_ids = set()
+    seen_classes: set[str] = set()
     for course in all_course:
-        course_id = course["courseId"]
-        if course_id in selected_ids and course_id not in seen_course_ids:
+        selection_key = course_class_key(course)
+        if (
+            selection_key
+            and selection_key not in seen_classes
+            and course_matches_selection(course, course_list)
+        ):
             course_task.append(course)
-            seen_course_ids.add(course_id)
+            seen_classes.add(selection_key)
 
     if not course_task:
         raise ValueError("当前配置中的课程列表未匹配到任何有效课程，请先刷新课程列表后重新选择。")

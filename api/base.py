@@ -1281,6 +1281,81 @@ class Chaoxing:
             logger.info(f"阅读任务学习 -> {_resp_json['msg']}")
             return StudyResult.SUCCESS
 
+    def study_read_duration(self, _course, _job_info, duration_seconds) -> StudyResult:
+        """按阅读页的滚动日志机制上报阅读时长。
+
+        超星阅读页会在进入时发送一次 ``/multimedia/readlog``，
+        之后每 5 秒检查滚动位置，仅当位置变化时继续上报。
+        这里使用当前登录会话复现同样的请求节奏。
+        """
+        duration_seconds = max(0, int(duration_seconds or 0))
+        if duration_seconds <= 0:
+            return StudyResult.SUCCESS
+
+        course_id = str(_course.get("courseId") or "").strip()
+        knowledge_id = str(_job_info.get("knowledgeid") or "").strip()
+        if not course_id or not knowledge_id:
+            logger.error("阅读时长上报失败 -> 缺少 courseId 或 knowledgeid")
+            return StudyResult.ERROR
+
+        session = SessionManager.get_session()
+        page_url = "https://mooc1.chaoxing.com/mooc-ans/ztnodedetailcontroller/visitnodedetail"
+        page_params = {
+            "courseId": course_id,
+            "knowledgeId": knowledge_id,
+            "_from_": "",
+        }
+        log_url = "https://mooc1.chaoxing.com/multimedia/readlog"
+        # 使用足够的可滚动高度，并在设定时长内线性推进位置。
+        content_height = max(1200, duration_seconds * 20)
+
+        try:
+            page_response = session.get(page_url, params=page_params)
+            if page_response.status_code != 200:
+                logger.error(
+                    f"阅读页访问失败 -> [{page_response.status_code}]{page_response.text[:200]}"
+                )
+                return StudyResult.ERROR
+
+            referer = page_response.url
+
+            def send_read_log(scroll_position: int) -> bool:
+                response = session.get(
+                    log_url,
+                    params={
+                        "courseid": course_id,
+                        "chapterid": knowledge_id,
+                        "height": content_height,
+                        "h": scroll_position,
+                    },
+                    headers={"Referer": referer},
+                )
+                if response.status_code != 200:
+                    logger.error(
+                        f"阅读时长上报失败 -> [{response.status_code}]{response.text[:200]}"
+                    )
+                    return False
+                return True
+
+            logger.info(f"开始上报阅读时长: {duration_seconds} 秒")
+            if not send_read_log(0):
+                return StudyResult.ERROR
+
+            elapsed = 0
+            while elapsed < duration_seconds:
+                wait_seconds = min(5, duration_seconds - elapsed)
+                time.sleep(wait_seconds)
+                elapsed += wait_seconds
+                scroll_position = max(1, round(content_height * elapsed / duration_seconds))
+                if not send_read_log(scroll_position):
+                    return StudyResult.ERROR
+
+            logger.info(f"阅读时长上报完成: {duration_seconds} 秒")
+            return StudyResult.SUCCESS
+        except RequestException as exc:
+            logger.error(f"阅读时长上报失败 -> {exc}")
+            return StudyResult.ERROR
+
     def _send_monitor_heartbeat(self, course, point):
         """
         发送章节监控心跳包到 detect.chaoxing.com。
@@ -1406,7 +1481,7 @@ class Chaoxing:
         Args:
             course: 课程信息字典
             points: 课程所有章节列表
-            target_count: 目标总次数
+            target_count: 本次计划增加的总次数
 
         Returns:
             StudyResult: 操作结果
@@ -1414,7 +1489,7 @@ class Chaoxing:
         total = 0
         consecutive_failures = 0
         max_consecutive_failures = 10
-        logger.info(f"开始增加章节学习次数, 目标总次数: {target_count}, 章节数: {len(points)}")
+        logger.info(f"开始增加章节学习次数, 本次计划: {target_count}, 章节数: {len(points)}")
         if not points:
             logger.warning("章节列表为空, 跳过章节学习次数增加")
             return StudyResult.SUCCESS

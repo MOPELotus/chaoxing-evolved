@@ -14,6 +14,7 @@ from pathlib import Path
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from api.base import Account, Chaoxing
+from api.course_selection import course_class_key, course_matches_selection
 from api.json_store import (
     build_effective_profile,
     load_global_settings,
@@ -265,17 +266,18 @@ def fetch_courses_for_profile(profile_name: str) -> list[dict]:
         if not login_state["status"]:
             raise ValueError(login_state["msg"])
 
-        selected_course_ids = set(effective_profile.get("common", {}).get("course_list", []))
+        selected_courses = list(effective_profile.get("common", {}).get("course_list", []))
         courses = []
         for course in chaoxing.get_course_list():
             courses.append(
                 {
                     "courseId": course["courseId"],
                     "clazzId": course["clazzId"],
+                    "selectionKey": course_class_key(course),
                     "title": course["title"],
                     "teacher": course.get("teacher", ""),
                     "desc": course.get("desc", ""),
-                    "selected": course["courseId"] in selected_course_ids,
+                    "selected": course_matches_selection(course, selected_courses),
                 }
             )
         return courses

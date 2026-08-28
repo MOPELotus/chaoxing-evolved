@@ -71,6 +71,7 @@ from api.json_store import (
     save_global_settings,
     save_json_profile,
 )
+from api.course_selection import course_class_key
 from desktop.runtime import RunManager, fetch_courses_for_profile
 
 
@@ -1001,7 +1002,7 @@ class ProfileEditorPanel(QWidget):
         self._override_controls: dict[tuple[str, str], tuple[CheckBox, QWidget]] = {}
         self._course_cache: dict[str, list[dict]] = {}
         self._courses: list[dict] = []
-        self._selected_course_ids: list[str] = []
+        self._selected_course_keys: list[str] = []
         self._course_fetch_thread: CourseFetchThread | None = None
 
         self.root_layout = QVBoxLayout(self)
@@ -1109,8 +1110,16 @@ class ProfileEditorPanel(QWidget):
         common_grid.addWidget(make_field("Cookies 路径", self.cookies_path_edit), 4, 0)
         common_grid.addWidget(make_field("Cache 路径", self.cache_path_edit), 4, 1)
         common_grid.addWidget(self.add_learning_count_check, 5, 0)
-        common_grid.addWidget(make_field("目标学习次数", self.target_count_spin), 5, 1)
-        common_grid.addWidget(make_field("阅读停留时长（秒）", self.reading_duration_spin), 6, 0)
+        common_grid.addWidget(make_field("本次增加次数", self.target_count_spin), 5, 1)
+        common_grid.addWidget(
+            make_field(
+                "阅读计时（秒）",
+                self.reading_duration_spin,
+                "每 5 秒模拟阅读页滚动并上报进度；0 表示关闭，平台可能次日统计。",
+            ),
+            6,
+            0,
+        )
         self.common_card.body_layout.addLayout(common_grid)
         self.scroll_layout.addWidget(self.common_card)
 
@@ -1582,7 +1591,7 @@ class ProfileEditorPanel(QWidget):
         self._dirty = False
         self._profile_source = deepcopy(DEFAULT_PROFILE)
         self._courses = []
-        self._selected_course_ids = []
+        self._selected_course_keys = []
         self._loading = True
         global_settings = load_global_settings()
         tiku_defaults = global_settings.get("defaults", {}).get("tiku", {})
@@ -1664,7 +1673,7 @@ class ProfileEditorPanel(QWidget):
     def _populate_profile(self, profile_name: str, profile: dict) -> None:
         self._current_profile_name = profile_name
         self._profile_source = deepcopy(profile)
-        self._selected_course_ids = list(profile.get("common", {}).get("course_list", []))
+        self._selected_course_keys = list(profile.get("common", {}).get("course_list", []))
         self._courses = self._course_cache.get(profile_name, [])
         self._dirty = False
         self._loading = True
@@ -1847,7 +1856,7 @@ class ProfileEditorPanel(QWidget):
         common["cache_path"] = self.cache_path_edit.text().strip()
         common["username"] = self.username_edit.text().strip()
         common["password"] = self.password_edit.text().strip()
-        common["course_list"] = list(self._selected_course_ids)
+        common["course_list"] = list(self._selected_course_keys)
         common["speed"] = round(float(self.speed_spin.value()), 2)
         common["jobs"] = int(self.jobs_spin.value())
         common["notopen_action"] = get_notopen_action(self.notopen_combo)
@@ -2020,7 +2029,7 @@ class ProfileEditorPanel(QWidget):
         self._course_fetch_thread.start()
 
     def clear_courses(self) -> None:
-        self._selected_course_ids = []
+        self._selected_course_keys = []
         if self._courses:
             self.course_chip_panel.clear_selection()
         self._update_course_summary()
@@ -2032,12 +2041,16 @@ class ProfileEditorPanel(QWidget):
         if profile_name != self._current_profile_name:
             return
         self._courses = courses
-        selected_ids = [course["courseId"] for course in courses if course.get("selected")]
-        if selected_ids:
-            self._selected_course_ids = selected_ids
+        selected_keys = [
+            str(course.get("selectionKey") or course_class_key(course)).strip()
+            for course in courses
+            if course.get("selected")
+        ]
+        if selected_keys:
+            self._selected_course_keys = selected_keys
         self._apply_course_cards(courses)
         self._update_course_summary()
-        show_bar(self, "success", "课程列表已更新", f"{profile_name} 共获取到 {len(courses)} 门课程。")
+        show_bar(self, "success", "课程列表已更新", f"{profile_name} 共获取到 {len(courses)} 个课程班级。")
 
     def _on_courses_failed(self, profile_name: str, message: str) -> None:
         if profile_name == self._current_profile_name:
@@ -2053,20 +2066,26 @@ class ProfileEditorPanel(QWidget):
         for course in courses:
             title = str(course.get("title", "")).strip() or str(course.get("courseId", "")).strip()
             teacher = str(course.get("teacher", "")).strip()
-            subtitle = f" | {teacher}" if teacher else ""
-            items.append((str(course.get("courseId", "")).strip(), f"{title}{subtitle}"))
-        self.course_chip_panel.set_items(items, self._selected_course_ids)
+            clazz_id = str(course.get("clazzId", "")).strip()
+            details = [value for value in (teacher, f"班级 {clazz_id}" if clazz_id else "") if value]
+            subtitle = f" | {' | '.join(details)}" if details else ""
+            selection_key = str(course.get("selectionKey") or course_class_key(course)).strip()
+            items.append((selection_key, f"{title}{subtitle}"))
+        self.course_chip_panel.set_items(items, self._selected_course_keys)
 
     def _update_course_summary(self) -> None:
         if self._courses:
-            self._selected_course_ids = self.course_chip_panel.selected_values()
-            self.course_status.setText(f"已选择 {len(self._selected_course_ids)} / {len(self._courses)} 门课程。")
-            return
-        if self._selected_course_ids:
-            preview = ", ".join(self._selected_course_ids[:5])
-            suffix = " ..." if len(self._selected_course_ids) > 5 else ""
+            self._selected_course_keys = self.course_chip_panel.selected_values()
             self.course_status.setText(
-                f"当前配置已保存 {len(self._selected_course_ids)} 个 courseId：{preview}{suffix}。获取课程列表后可在标签中调整。"
+                f"已选择 {len(self._selected_course_keys)} / {len(self._courses)} 个课程班级。"
+            )
+            return
+        if self._selected_course_keys:
+            preview = ", ".join(self._selected_course_keys[:5])
+            suffix = " ..." if len(self._selected_course_keys) > 5 else ""
+            self.course_status.setText(
+                f"当前配置已保存 {len(self._selected_course_keys)} 个课程选择项：{preview}{suffix}。"
+                "获取课程列表后可按班级精确调整。"
             )
         else:
             self.course_status.setText("尚未选择课程。")
@@ -2074,7 +2093,7 @@ class ProfileEditorPanel(QWidget):
     def _on_course_selection_changed(self) -> None:
         if self._loading:
             return
-        self._selected_course_ids = self.course_chip_panel.selected_values()
+        self._selected_course_keys = self.course_chip_panel.selected_values()
         self._update_course_summary()
         self._mark_dirty()
 
