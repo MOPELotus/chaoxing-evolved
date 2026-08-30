@@ -482,8 +482,13 @@ def process_chapter(
             return ChapterResult.ERROR
 
     skipped_result = any(result == StudyResult.SKIPPED for result in job_results)
+    # A successful work POST only means that Chaoxing accepted the request. It
+    # may still contain empty native fields or receive a score below the task
+    # point's pass line. Re-read ordinary homework points as well so those
+    # cases enter the existing retry/AI-refresh path instead of being reported
+    # as locally successful.
     requires_confirmation = is_challenge_point(point) or any(
-        job.get("type") == "live" for job in jobs
+        job.get("type") in {"live", "workid"} for job in jobs
     )
     if not requires_confirmation:
         return ChapterResult.SUCCESS

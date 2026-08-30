@@ -520,7 +520,16 @@ def _process_question(div_tag, font_decoder=None) -> Dict[str, Any]:
     title_div = div_tag.select_one(".Zy_TItle, .tit, .mark_name, h3")
     options_list = div_tag.find("ul").find_all("li") if div_tag.find("ul") else []
     if not options_list:
-        options_list = div_tag.select(".answerBg .answer_p, .textDIV, .eidtDiv")
+        # UEditor answer containers are inputs, not question options.  Treating
+        # their surrounding ``.textDIV`` nodes as options leaked the editor
+        # bootstrap JavaScript (including the "只能录入不能粘贴" listener) into
+        # the AI question and hid the fact that type-2 questions use one form
+        # field per blank.
+        options_list = [
+            node
+            for node in div_tag.select(".answerBg .answer_p, .textDIV, .eidtDiv")
+            if not node.select_one("textarea[name^='answerEditor'], input[name^='answerEditor']")
+        ]
 
     # 解析题目和选项
     q_title, blank_count, underline_count = _rich_node_text(title_div, font_decoder)
@@ -530,6 +539,18 @@ def _process_question(div_tag, font_decoder=None) -> Dict[str, Any]:
         q_type = _get_question_type(q_title)
     if q_type == "unknown" and div_tag.select_one(".firstUlList") and div_tag.select_one(".secondUlList"):
         q_type = "matching"
+    answer_fields = []
+    for field in div_tag.select("textarea[name^='answerEditor'], input[name^='answerEditor']"):
+        field_name = str(field.get("name") or field.get("id") or "").strip()
+        if field_name and field_name not in answer_fields:
+            answer_fields.append(field_name)
+
+    def answer_field_order(name: str) -> tuple[int, str]:
+        match = re.search(r"(\d+)$", name)
+        return (int(match.group(1)) if match else 0, name)
+
+    answer_fields.sort(key=answer_field_order)
+    blank_count = max(blank_count, len(answer_fields))
     q_options = []
     for li in options_list:
         if getattr(li, "name", "") in {"textarea", "input"}:
@@ -578,6 +599,7 @@ def _process_question(div_tag, font_decoder=None) -> Dict[str, Any]:
         "blank_count": blank_count,
         "underline_count": underline_count,
         "matching_groups": matching_groups,
+        "answer_fields": answer_fields,
         "native_type": q_type_code,
         "answerField": {
             f"answer{question_id}": "",
@@ -686,6 +708,8 @@ def _rich_node_text(node, font_decoder=None) -> tuple[str, int, int]:
 
             return blank_pattern.sub(replace_blank, value)
         if not isinstance(element, Tag):
+            return ''
+        if element.name in {'script', 'style', 'noscript', 'template'}:
             return ''
         if element.name == 'img':
             source = str(element.get('src') or element.get('data-original') or '').strip()

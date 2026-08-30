@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import functools
+import html
 import json
 import random
 import secrets
@@ -11,8 +12,10 @@ from difflib import SequenceMatcher
 from enum import Enum, IntEnum
 from hashlib import md5
 from typing import Self, Optional, Literal
+from urllib.parse import urljoin
 
 import requests
+from bs4 import BeautifulSoup
 from loguru import logger
 from requests import RequestException
 from requests.adapters import HTTPAdapter
@@ -181,13 +184,21 @@ def multi_cut(answer: str, origin_html_content="", logger=logger):
         return res
 
 
+CHOICE_PREFIX_PATTERN = re.compile(
+    r'^\s*(?:[A-Za-z]|\d+)\s*(?:[.、:：)?）]|\s+)\s*'
+)
+
+
 def clean_res(res):
     cleaned_res = []
     if isinstance(res, str):
         res = [res]
     for c in res:
-        # 仅在字符串长度大于1时才尝试去除开头的字母编号，防止误删单个字母答案
-        cleaned = re.sub(r'^[A-Za-z]\s*[.、:：)?）]?\s*|[.,!?;:，。！？；：]', '', c) if len(c) > 1 else c
+        # Only remove a real choice prefix (``A.``/``B、``/``1)``).  The old
+        # expression made every separator optional and therefore turned
+        # English answers such as ``Some benefit`` into ``ome benefit``.
+        cleaned = CHOICE_PREFIX_PATTERN.sub('', str(c), count=1) if len(str(c)) > 1 else str(c)
+        cleaned = re.sub(r'[.,!?;:，。！？；：]', '', cleaned)
         cleaned_res.append(cleaned.strip())
     return cleaned_res
 
@@ -203,14 +214,110 @@ def normalize_text(text: str) -> str:
         '⻢': '马',
     })
     normalized = text.translate(char_map)
-    normalized = re.sub(r'^[A-Za-z]\s*[.、:：)?）]?\s*', '', normalized)
+    normalized = CHOICE_PREFIX_PATTERN.sub('', normalized, count=1)
     normalized = re.sub(r'\s+', '', normalized)
     normalized = re.sub(r'[，。！？；：,.!?;:()（）\[\]【】"“”‘’\-_/\\|]', '', normalized)
     return normalized.lower()
 
 
 def get_option_text(option: str) -> str:
-    return re.sub(r'^[A-Za-z]\s*[.、:：)?）]?\s*', '', option).strip()
+    return CHOICE_PREFIX_PATTERN.sub('', str(option), count=1).strip()
+
+
+def option_letter(index: int) -> str:
+    """Return the Chaoxing form value for a zero-based choice index."""
+    if 0 <= index < 26:
+        return chr(ord('A') + index)
+    return str(index + 1)
+
+
+def choice_option_items(options) -> list[str]:
+    """Keep option boundaries without assuming their text starts with A/B/C."""
+    if isinstance(options, (list, tuple)):
+        return [str(item).strip() for item in options if str(item).strip()]
+    if options is None:
+        return []
+    return [line.strip() for line in str(options).splitlines() if line.strip()]
+
+
+def question_option_items(question: Mapping, origin_html_content: str = "") -> list[str]:
+    items = choice_option_items(question.get("option_items"))
+    if items:
+        return items
+    items = choice_option_items(question.get("options"))
+    if items:
+        return items
+    return multi_cut(str(question.get("options") or ""), origin_html_content) or []
+
+
+def _explicit_choice_letters(value: str, option_count: int) -> list[str]:
+    text = str(value or "").strip()
+    if not text or option_count <= 0:
+        return []
+    text = re.sub(r'^\s*(?:答案|answer)\s*[:：]\s*', '', text, flags=re.I)
+    text = text.strip('[]()（）{}').strip()
+    compact = re.sub(r'[\s,，、|/]+', '', text).upper()
+    if not compact or not re.fullmatch(r'[A-Z]+', compact):
+        return []
+    valid = {option_letter(index) for index in range(min(option_count, 26))}
+    if all(letter in valid for letter in compact):
+        return list(dict.fromkeys(compact))
+    return []
+
+
+def _match_option_text(target: str, options: list[str], threshold: float = 0.8) -> str:
+    target_norm = normalize_text(target)
+    if not target_norm:
+        return ""
+
+    normalized_options = [normalize_text(get_option_text(option)) for option in options]
+    for index, option_norm in enumerate(normalized_options):
+        if option_norm and target_norm == option_norm:
+            return option_letter(index)
+    for index, option_norm in enumerate(normalized_options):
+        if option_norm and min(len(target_norm), len(option_norm)) >= 4 and (
+            target_norm in option_norm or option_norm in target_norm
+        ):
+            return option_letter(index)
+    return best_option_by_similarity(target, options, threshold=threshold)
+
+
+def map_choice_answer(value, options: list[str], multiple: bool = False) -> str:
+    """Map model letters, indices, or option text to Chaoxing A/B/C values."""
+    if not options or value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+
+    explicit = _explicit_choice_letters(text, len(options))
+    if explicit:
+        return "".join(sorted(explicit)) if multiple else explicit[0]
+
+    parts = (
+        [part.strip() for part in re.split(r'[\n\r\t,，|#、]+', text) if part.strip()]
+        if multiple
+        else [text]
+    )
+    matched_letters: list[str] = []
+    for part in parts:
+        explicit = _explicit_choice_letters(part, len(options))
+        if explicit:
+            matched_letters.extend(explicit)
+            continue
+        if part.isdigit():
+            option_index = int(part) - 1
+            if 0 <= option_index < len(options):
+                matched_letters.append(option_letter(option_index))
+                continue
+        matched = _match_option_text(part, options)
+        if matched:
+            matched_letters.append(matched)
+
+    letters = list(dict.fromkeys(matched_letters))
+    if multiple:
+        return "".join(sorted(letters))
+    return letters[0] if letters else ""
 
 
 def best_option_by_similarity(target: str, options: list, threshold: float = 0.8) -> str:
@@ -222,7 +329,7 @@ def best_option_by_similarity(target: str, options: list, threshold: float = 0.8
 
     best_letter = ""
     best_score = 0.0
-    for option in options:
+    for index, option in enumerate(options):
         option_text = get_option_text(option)
         option_norm = normalize_text(option_text)
         if not option_norm:
@@ -230,7 +337,7 @@ def best_option_by_similarity(target: str, options: list, threshold: float = 0.8
         score = SequenceMatcher(None, target_norm, option_norm).ratio()
         if score > best_score:
             best_score = score
-            best_letter = option[:1]
+            best_letter = option_letter(index)
 
     if best_score >= threshold:
         logger.info(f"相似度兜底匹配成功: {best_letter} (score={best_score:.2f}, threshold={threshold:.2f})")
@@ -243,14 +350,14 @@ def is_subsequence(a, o):
     return all(c in iter_o for c in a.lower())
 
 
-def random_answer(options: str, q_type: str) -> str:
+def random_answer(options, q_type: str) -> str:
     answer = ""
     if not options:
         return answer
 
     if q_type == "multiple":
         logger.debug(f"当前选项列表[cut前] -> {options}")
-        _op_list = multi_cut(options)
+        _op_list = choice_option_items(options)
         logger.debug(f"当前选项列表[cut后] -> {_op_list}")
 
         if not _op_list:
@@ -287,14 +394,12 @@ def random_answer(options: str, q_type: str) -> str:
 
             select_count = random.choices(possible_counts, weights=weights, k=1)[0]
 
-        selected_options = random.sample(_op_list, select_count) if select_count > 0 else []
-
-        for option in selected_options:
-            answer += option[:1]  # 取首字为答案，例如A或B
-
-        answer = "".join(sorted(answer))
+        selected_indices = random.sample(range(available_options), select_count) if select_count > 0 else []
+        answer = "".join(option_letter(index) for index in sorted(selected_indices))
     elif q_type == "single":
-        answer = random.choice(options.split("\n"))[:1]  # 取首字为答案, 例如A或B
+        option_items = choice_option_items(options)
+        if option_items:
+            answer = option_letter(random.randrange(len(option_items)))
     # 判断题处理
     elif q_type == "judgement":
         answer = "true" if random.choice([True, False]) else "false"
@@ -326,6 +431,182 @@ def submission_answer(value, question: dict) -> str:
             return "".join(values)
         return "\n".join(values)
     return str(value).strip()
+
+
+def _answer_json_value(value):
+    """Decode provider JSON strings while leaving ordinary prose untouched."""
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text or text[0] not in "[{":
+        return value
+    try:
+        return json.loads(text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return value
+
+
+def completion_answer_items(value, expected_count: int = 0) -> list[str]:
+    """Return fill-blank answers in page order without flattening them early."""
+    value = _answer_json_value(value)
+    if isinstance(value, Mapping):
+        for key in ("answers", "answer", "items", "values", "content", "text"):
+            if key in value:
+                return completion_answer_items(value[key], expected_count)
+        return []
+    if isinstance(value, (list, tuple)):
+        items = []
+        for item in value:
+            if isinstance(item, Mapping):
+                for key in ("content", "answer", "text", "value"):
+                    if key in item:
+                        item = item[key]
+                        break
+            text = str(item).strip()
+            if text:
+                items.append(text)
+        return items
+
+    text = str(value or "").strip()
+    if not text:
+        return []
+    if expected_count > 1:
+        separated = [item.strip() for item in re.split(r"[\r\n,，、|;；]+", text) if item.strip()]
+        if len(separated) == expected_count:
+            return separated
+        compact = re.sub(r"\s+", "", text)
+        if len(compact) == expected_count:
+            return list(compact)
+    return [text]
+
+
+def _matching_side_index(value, choices: list[str], *, letters: bool) -> int | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if letters:
+        prefix = re.match(r"^\s*([A-Za-z])(?:\s*$|[.、:：)）\s])", text)
+        if prefix:
+            index = ord(prefix.group(1).upper()) - ord("A")
+            if 0 <= index < len(choices):
+                return index
+    else:
+        prefix = re.match(r"^\s*(\d+)(?:\s*$|[.、:：)）\s])", text)
+        if prefix:
+            index = int(prefix.group(1)) - 1
+            if 0 <= index < len(choices):
+                return index
+
+    normalized = normalize_text(text)
+    best_index = None
+    best_score = 0.0
+    for index, choice in enumerate(choices):
+        candidate = normalize_text(choice)
+        if normalized == candidate:
+            return index
+        if normalized and candidate and (normalized in candidate or candidate in normalized):
+            score = min(len(normalized), len(candidate)) / max(len(normalized), len(candidate))
+        else:
+            score = SequenceMatcher(None, normalized, candidate).ratio()
+        if score > best_score:
+            best_score = score
+            best_index = index
+    return best_index if best_score >= 0.62 else None
+
+
+def matching_submission_answer(value, question: Mapping) -> str:
+    """Encode matching answers exactly like Chaoxing's setConnLineAnswer()."""
+    value = _answer_json_value(value)
+    if isinstance(value, Mapping):
+        for key in ("pairs", "answers", "answer", "items", "matches"):
+            if key in value:
+                value = _answer_json_value(value[key])
+                break
+
+    groups = question.get("matching_groups") or {}
+    left_choices = [str(item) for item in groups.get("left") or []]
+    right_choices = [str(item) for item in groups.get("right") or []]
+    expected_count = len(left_choices)
+    pairs: dict[int, int] = {}
+
+    if isinstance(value, str):
+        compact = re.sub(r"[\s,，、|;；]+", "", value).upper()
+        if expected_count and len(compact) == expected_count and compact.isalpha():
+            value = list(compact)
+
+    if isinstance(value, (list, tuple)):
+        for position, item in enumerate(value):
+            if isinstance(item, Mapping):
+                left_value = item.get("left", item.get("name", item.get("index", position + 1)))
+                right_value = item.get("right", item.get("content", item.get("answer", item.get("value", ""))))
+            else:
+                left_value = position + 1
+                right_value = item
+            left_index = _matching_side_index(left_value, left_choices, letters=False)
+            right_index = _matching_side_index(right_value, right_choices, letters=True)
+            if left_index is not None and right_index is not None:
+                pairs[left_index] = right_index
+
+    if not expected_count or len(pairs) != expected_count:
+        return ""
+    encoded = [
+        {"name": str(index + 1), "content": option_letter(pairs[index])}
+        for index in range(expected_count)
+    ]
+    return json.dumps(encoded, ensure_ascii=False, separators=(",", ":"))
+
+
+def prepare_submission_answer(value, question: dict) -> tuple[str, dict[str, str]]:
+    """Build the displayed answer and any native per-control form fields."""
+    q_type = str(question.get("type") or "")
+    if q_type == "matching":
+        return matching_submission_answer(value, question), {}
+    if q_type == "completion":
+        fields = [str(item) for item in question.get("answer_fields") or []]
+        if fields:
+            items = completion_answer_items(value, len(fields))
+            if len(items) != len(fields):
+                return "", {}
+            # Each blank is a UEditor control. jQuery serializes its HTML
+            # content (normally ``<p>answer</p>``), not a synthetic
+            # ``answer{question_id}`` value. Chaoxing may accept the latter as
+            # a draft, but it grades the whole question as incorrect.
+            native_items = [
+                item if re.search(r"<[^>]+>", item) else f"<p>{html.escape(item)}</p>"
+                for item in items
+            ]
+            return "".join(items), dict(zip(fields, native_items))
+    return submission_answer(value, question), {}
+
+
+def resolve_work_submit_url(html: str, response_url: str) -> str:
+    """Use the endpoint and per-attempt token emitted by the current work page."""
+    form = BeautifulSoup(html or "", "lxml").find("form")
+    action = str(form.get("action") or "").strip() if form else ""
+    if action:
+        return urljoin(response_url, action)
+    return "https://mooc1.chaoxing.com/mooc-ans/work/addStudentWorkNew"
+
+
+def assemble_work_submission(form_data: Mapping) -> dict:
+    """Build the browser-equivalent work form without invented answer fields."""
+    payload = {key: value for key, value in form_data.items() if key != "questions"}
+    save_only = payload.get("pyFlag") == "1"
+    for question in form_data.get("questions") or []:
+        question_id = question["id"]
+        use_answer = not save_only or question.get(f"answerSource{question_id}") == "cover"
+        payload[f"answertype{question_id}"] = question["answerField"][f"answertype{question_id}"]
+        native_fields = question.get("submission_fields") or {}
+        if native_fields:
+            payload.update({
+                field: value if use_answer else ""
+                for field, value in native_fields.items()
+            })
+        else:
+            payload[f"answer{question_id}"] = (
+                question["answerField"][f"answer{question_id}"] if use_answer else ""
+            )
+    return payload
 
 
 class Chaoxing:
@@ -1113,64 +1394,28 @@ class Chaoxing:
             answer = ""
             if not res:
                 # 随机答题
-                answer = random_answer(q["options"], q["type"])
+                answer = random_answer(q.get("option_items") or q["options"], q["type"])
                 q[f'answerSource{q["id"]}'] = "random"
             else:
                 # 根据响应结果选择答案
-                res = submission_answer(res, q)
                 if q["type"] == "multiple":
-                    # 多选处理
-                    options_list = multi_cut(q["options"], _ORIGIN_HTML_CONTENT)
-                    res_list = multi_cut(res, _ORIGIN_HTML_CONTENT)
-                    if res_list is not None and options_list is not None:
-                        for _a in clean_res(res_list):
-                            matched = False
-                            if str(_a).strip().isdigit():
-                                option_index = int(str(_a).strip()) - 1
-                                if 0 <= option_index < len(options_list):
-                                    answer += options_list[option_index][:1]
-                                    continue
-                            for o in options_list:
-                                if (
-                                        is_subsequence(_a, o)  # 去掉各种符号和前面ABCD的答案应当是选项的子序列
-                                ):
-                                    answer += o[:1]
-                                    matched = True
-                                    break  # 找到匹配项后立即停止，防止重复添加
-                            if not matched:
-                                best_letter = best_option_by_similarity(_a, options_list, threshold=0.8)
-                                if best_letter:
-                                    answer += best_letter
-                        # 对答案进行排序, 否则会提交失败
-                        answer = "".join(sorted(set(answer)))
-                    # else 如果分割失败那么就直接到下面去随机选
+                    res = submission_answer(res, q)
+                    options_list = question_option_items(q, _ORIGIN_HTML_CONTENT)
+                    answer = map_choice_answer(res, options_list, multiple=True)
                 elif q["type"] == "single":
-                    # 单选也进行切割，主要是防止返回的答案有异常字符
-                    options_list = multi_cut(q["options"], _ORIGIN_HTML_CONTENT)
-                    if options_list is not None:
-                        t_res = clean_res(res)
-                        for o in options_list:
-                            if is_subsequence(t_res[0], o):
-                                answer = o[:1]
-                                break
-                        if not answer and t_res and str(t_res[0]).strip().isdigit():
-                            option_index = int(str(t_res[0]).strip()) - 1
-                            if 0 <= option_index < len(options_list):
-                                answer = options_list[option_index][:1]
-                        if not answer and t_res:
-                            answer = best_option_by_similarity(t_res[0], options_list, threshold=0.8)
+                    res = submission_answer(res, q)
+                    options_list = question_option_items(q, _ORIGIN_HTML_CONTENT)
+                    answer = map_choice_answer(res, options_list)
                 elif q["type"] == "judgement":
+                    res = submission_answer(res, q)
                     answer = "true" if self.tiku.judgement_select(res) else "false"
-                elif q["type"] == "completion":
-                    answer = res
                 else:
-                    # Extended/native families are encoded as JSON when the
-                    # provider returns an object/list, preserving relations.
-                    answer = res
+                    answer, native_fields = prepare_submission_answer(res, q)
+                    q["submission_fields"] = native_fields
 
                 if not answer:  # 检查 answer 是否为空
                     logger.warning(f"找到答案但答案未能匹配 -> {res}\t随机选择答案")
-                    answer = random_answer(q["options"], q["type"])  # 如果为空，则随机选择答案
+                    answer = random_answer(q.get("option_items") or q["options"], q["type"])  # 如果为空，则随机选择答案
                     q[f'answerSource{q["id"]}'] = "random"
                 else:
                     logger.info(f"成功获取到答案：{answer}")
@@ -1196,29 +1441,44 @@ class Chaoxing:
         else:
             questions["pyFlag"] = "1"
             logger.info(f"章节检测题库覆盖率低于{self.tiku.COVER_RATE * 100:.0f}%，不予提交")
-        # 组建提交表单
-        if questions["pyFlag"] == "1":
-            for q in questions["questions"]:
-                questions.update(
-                    {
-                        f'answer{q["id"]}':
-                            q["answerField"][f'answer{q["id"]}'] if q[f'answerSource{q["id"]}'] == "cover" else '',
-                        f'answertype{q["id"]}': q["answerField"][f'answertype{q["id"]}'],
-                    }
-                )
-        else:
-            for q in questions["questions"]:
-                questions.update(
-                    {
-                        f'answer{q["id"]}': q["answerField"][f'answer{q["id"]}'],
-                        f'answertype{q["id"]}': q["answerField"][f'answertype{q["id"]}'],
-                    }
-                )
+        # 组建提交表单。多编辑框填空题只能提交页面实际存在的
+        # answerEditor* 字段，不能再虚构 answer{question_id}。
+        questions = assemble_work_submission(questions)
 
-        del questions["questions"]
-
+        submit_url = resolve_work_submit_url(final_resp.text, final_resp.url)
+        try:
+            validation_resp = _session.get(
+                "https://mooc1.chaoxing.com/mooc-ans/work/validate",
+                params={
+                    "classId": _course["clazzId"],
+                    "courseId": _course["courseId"],
+                    "knowledgeId": _job_info["knowledgeid"],
+                    "cpi": _job_info["cpi"],
+                },
+                headers={"Referer": final_resp.url},
+            )
+            validation_data = validation_resp.json()
+        except (RequestException, ValueError) as exc:
+            logger.warning("提交前账号校验请求失败: {}", exc)
+            return StudyResult.ERROR
+        if validation_data.get("status") == 1:
+            logger.error("提交前账号校验失败，请重新登录")
+            return StudyResult.ERROR
+        if validation_data.get("status") not in {2, 3}:
+            logger.warning("提交前账号校验返回未知状态: {}", validation_data)
+            return StudyResult.ERROR
         res = _session.post(
-            "https://mooc1.chaoxing.com/mooc-ans/work/addStudentWorkNew",
+            submit_url,
+            params={
+                "ua": "pc",
+                "formType": "post",
+                "saveStatus": "1",
+                # The browser supplies an anti-automation mouse-position
+                # token here. Its own JavaScript also tolerates an empty
+                # value when no usable click event is available.
+                "pos": "",
+                "version": "1",
+            },
             data=questions,
             headers={
                 "Host": "mooc1.chaoxing.com",
@@ -1230,6 +1490,7 @@ class Chaoxing:
                 "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
                 "sec-ch-ua-mobile": "?0",
                 "Origin": "https://mooc1.chaoxing.com",
+                "Referer": final_resp.url,
                 "Sec-Fetch-Site": "same-origin",
                 "Sec-Fetch-Mode": "cors",
                 "Sec-Fetch-Dest": "empty",
@@ -1241,6 +1502,23 @@ class Chaoxing:
             res_json = res.json()
             if res_json["status"]:
                 logger.info(f'{"提交" if questions["pyFlag"] == "" else "保存"}答题成功 -> {res_json["msg"]}')
+                # The browser always navigates to the returned ``submit=true``
+                # page after the AJAX request.  That navigation lets the
+                # course card consume the completed work job; stopping at the
+                # JSON response can leave a fully-correct quiz listed as an
+                # unfinished task point.
+                completion_path = str(res_json.get("backUrl") or res_json.get("url") or "").strip()
+                if questions["pyFlag"] == "" and completion_path:
+                    completion_url = urljoin(res.url, completion_path)
+                    completion_resp = _session.get(
+                        completion_url,
+                        headers={"Referer": final_resp.url},
+                    )
+                    if completion_resp.status_code != 200:
+                        logger.warning(
+                            "答题已提交，但任务点确认页面返回异常状态: {}",
+                            completion_resp.status_code,
+                        )
             else:
                 message = str(res_json.get("msg", ""))
                 if is_expired_task_text(message) or message.strip() in {"无效的课程", "无效课程"}:

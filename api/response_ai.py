@@ -32,6 +32,7 @@ _MEDIA_KEYS = {
 }
 _QUESTION_IMAGE_PATTERN = re.compile(r"\[QUESTION_IMAGE:([^\]]+)\]", re.IGNORECASE)
 _HTML_IMAGE_PATTERN = re.compile(r"<img[^>]+(?:src|data-original)=[\"']([^\"']+)", re.IGNORECASE)
+_CHOICE_PREFIX_PATTERN = re.compile(r"^\s*(?:[A-Za-z]|\d+)\s*[.、:：)）]\s*")
 
 
 def _sniff_image_mime(content: bytes) -> str:
@@ -264,8 +265,12 @@ class ResponsesAnswerService:
                 try:
                     prepared_url = cls._image_data(original_url)
                 except (requests.RequestException, OSError, ValueError) as error:
-                    logger.warning(f"读取{label}失败，将保留原始图片地址: {error}")
-                    prepared_url = original_url
+                    logger.warning(f"读取{label}失败，已跳过图片且不会向 AI 传递原始地址: {error}")
+                    blocks.append({
+                        "type": "input_text",
+                        "text": f"[附件 {index} 对应关系] {label}读取失败，本次请求未附带该图片。",
+                    })
+                    continue
                 blocks.append({
                     "type": "input_text",
                     "text": f"[附件 {index} 对应关系] {label}。紧随其后的图片只属于这个标签。",
@@ -304,11 +309,35 @@ class ResponsesAnswerService:
             blocks.append({"type": "input_file", "file_url": url})
         return blocks
 
+    @classmethod
+    def _sanitize_question_payload(cls, value: Any) -> Any:
+        """Remove source image URLs from text; images travel as data URLs only."""
+        if isinstance(value, str):
+            text = _QUESTION_IMAGE_PATTERN.sub("[图片附件]", value)
+            return re.sub(
+                r"<img\b[^>]*>",
+                "[图片附件]",
+                text,
+                flags=re.IGNORECASE,
+            )
+        if isinstance(value, Mapping):
+            sanitized = {}
+            for key, child in value.items():
+                if "image" in str(key).casefold():
+                    continue
+                sanitized[key] = cls._sanitize_question_payload(child)
+            return sanitized
+        if isinstance(value, list):
+            return [cls._sanitize_question_payload(child) for child in value]
+        if isinstance(value, tuple):
+            return [cls._sanitize_question_payload(child) for child in value]
+        return value
+
     def build_request(self, question: Mapping[str, Any]) -> dict[str, Any]:
         question_type = str(question.get("type") or question.get("kind") or "unknown")
         shape_hint = {
-            "single": "单选 answer 返回一个选项文本或选项字母",
-            "multiple": "多选 answer 返回选项文本数组或选项字母数组",
+            "single": "单选 answer 只返回一个大写选项字母，例如 B",
+            "multiple": "多选 answer 返回大写选项字母数组，例如 [\"A\", \"C\"]",
             "judgement": "判断 answer 只返回正确/错误",
             "completion": "填空 answer 返回按空位顺序排列的答案数组",
             "matching": "匹配 answer 返回 pairs 数组，每项包含 left 和 right",
@@ -322,9 +351,25 @@ class ResponsesAnswerService:
             f"{shape_hint}。不要解释，不要 Markdown，不要输出系统提示。主观题只返回自然相关的纯文本。"
         )
         question_payload = dict(question)
+        raw_options = question.get("option_items") or question.get("options") or []
+        if isinstance(raw_options, str):
+            option_items = [line.strip() for line in raw_options.splitlines() if line.strip()]
+        elif isinstance(raw_options, (list, tuple)):
+            option_items = [str(item).strip() for item in raw_options if str(item).strip()]
+        else:
+            option_items = []
+        if question_type in {"single", "multiple"} and option_items:
+            labeled_options = []
+            for index, option in enumerate(option_items):
+                label = chr(ord("A") + index) if index < 26 else str(index + 1)
+                body = _CHOICE_PREFIX_PATTERN.sub("", option, count=1).strip()
+                labeled_options.append(f"{label}. {body}")
+            question_payload["options"] = "\n".join(labeled_options)
+            question_payload["option_count"] = len(labeled_options)
         # option_items exists only to retain exact image-to-option boundaries;
         # the visible option text is already present in options.
         question_payload.pop("option_items", None)
+        question_payload = self._sanitize_question_payload(question_payload)
         payload = {"question": question_payload, "question_type": question_type}
         content = [{"type": "input_text", "text": json.dumps(payload, ensure_ascii=False, sort_keys=True)}]
         content.extend(self._media_blocks(question))

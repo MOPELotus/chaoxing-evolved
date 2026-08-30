@@ -71,6 +71,7 @@ def normalize_rich_text_for_prompt(text: str | None) -> str:
         return ""
 
     normalized = IMG_TAG_PATTERN.sub(" [图片] ", str(text))
+    normalized = IMAGE_MARKER_PATTERN.sub(" [图片] ", normalized)
     normalized = HTML_TAG_PATTERN.sub("", normalized)
     normalized = re.sub(r"\s+", " ", normalized)
     return normalized.strip()
@@ -85,7 +86,7 @@ def normalize_prompt_options(options: str | list[str] | None) -> str:
         raw_options = str(options).splitlines()
     cleaned_options = [
         re.sub(
-            r"^[A-Za-z][\s\.\)、:：]*",
+            r"^\s*(?:[A-Za-z]|\d+)\s*(?:[\.、:：)）]|\s+)\s*",
             "",
             normalize_rich_text_for_prompt(str(option)),
         ).strip()
@@ -194,8 +195,7 @@ def prepare_multimodal_image_urls(image_urls: list[str]) -> list[str]:
         try:
             prepared_urls.append(image_url_to_data_url(url))
         except Exception as exc:
-            logger.warning(f"图片转 base64 失败，回退为原始链接：{url} -> {exc}")
-            prepared_urls.append(url)
+            logger.warning(f"图片转 base64 失败，已跳过且不会向 AI 传递原始地址：{url} -> {exc}")
     return prepared_urls
 
 
