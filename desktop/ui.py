@@ -1182,6 +1182,10 @@ class ProfileEditorPanel(QWidget):
         self.decision_provider_combo.addItems(DECISION_PROVIDER_OPTIONS)
         self.check_connection_check = CheckBox("启动时检查大模型连接", self.tiku_card)
         self.submit_check = CheckBox("达到覆盖率后自动提交", self.tiku_card)
+        self.guess_retry_check = CheckBox("提交未通过后有限猜答（仅单选/判断）", self.tiku_card)
+        self.guess_retry_limit_spin = SpinBox(self.tiku_card)
+        self.guess_retry_limit_spin.setRange(1, 10)
+        self.guess_retry_check.setToolTip("首次仍需覆盖率达标且答案完整；仅平台明确未通过并允许重做时猜答。不识别逐题对错，可能改错原本正确的答案。")
         self.cover_rate_spin = DoubleSpinBox(self.tiku_card)
         self.cover_rate_spin.setRange(0.0, 1.0)
         self.cover_rate_spin.setDecimals(2)
@@ -1195,6 +1199,8 @@ class ProfileEditorPanel(QWidget):
         top_grid.addWidget(make_field("单题间隔（秒）", self.delay_spin), 0, 1)
         top_grid.addWidget(self.check_connection_check, 1, 0)
         top_grid.addWidget(self.submit_check, 1, 1)
+        top_grid.addWidget(self.guess_retry_check, 2, 0)
+        top_grid.addWidget(make_field("额外猜答次数上限", self.guess_retry_limit_spin), 2, 1)
         self.tiku_card.body_layout.addLayout(top_grid)
 
         self.provider_summary = CaptionLabel(self.tiku_card)
@@ -1325,6 +1331,8 @@ class ProfileEditorPanel(QWidget):
             self.decision_provider_combo,
             self.check_connection_check,
             self.submit_check,
+            self.guess_retry_check,
+            self.guess_retry_limit_spin,
             self.cover_rate_spin,
             self.delay_spin,
             self.tokens_edit,
@@ -1533,6 +1541,8 @@ class ProfileEditorPanel(QWidget):
             self.decision_provider_combo,
             self.check_connection_check,
             self.submit_check,
+            self.guess_retry_check,
+            self.guess_retry_limit_spin,
             self.cover_rate_spin,
             self.delay_spin,
             self.tokens_edit,
@@ -1619,6 +1629,8 @@ class ProfileEditorPanel(QWidget):
         set_combo_text(self.decision_provider_combo, "AI")
         self.check_connection_check.setChecked(True)
         self.submit_check.setChecked(False)
+        self.guess_retry_check.setChecked(False)
+        self.guess_retry_limit_spin.setValue(3)
         self.cover_rate_spin.setValue(0.9)
         self.delay_spin.setValue(1.0)
         self.tokens_edit.setText(str(tiku_defaults.get("tokens", "") or ""))
@@ -1706,6 +1718,8 @@ class ProfileEditorPanel(QWidget):
         set_combo_text(self.decision_provider_combo, "AI")
         self.check_connection_check.setChecked(bool(tiku.get("check_llm_connection", True)))
         self.submit_check.setChecked(bool(tiku.get("submit", False)))
+        self.guess_retry_check.setChecked(str(tiku.get("guess_retry_enabled", False)).strip().lower() in {"true", "1", "yes", "on"})
+        self.guess_retry_limit_spin.setValue(config_int(tiku.get("guess_retry_limit", 3), 3))
         self.cover_rate_spin.setValue(config_float(tiku.get("cover_rate", 0.9), 0.9))
         self.delay_spin.setValue(config_float(tiku.get("delay", 1.0), 1.0))
         self.tokens_edit.setText(str(effective_tiku.get("tokens", "") or ""))
@@ -1872,6 +1886,8 @@ class ProfileEditorPanel(QWidget):
         tiku["decision_provider"] = "AI"
         tiku["check_llm_connection"] = self.check_connection_check.isChecked()
         tiku["submit"] = self.submit_check.isChecked()
+        tiku["guess_retry_enabled"] = self.guess_retry_check.isChecked()
+        tiku["guess_retry_limit"] = self.guess_retry_limit_spin.value()
         tiku["cover_rate"] = round(float(self.cover_rate_spin.value()), 2)
         tiku["delay"] = round(float(self.delay_spin.value()), 2)
         apply_override(tiku, tiku_overrides, "tiku", "tokens", self.tokens_edit.text().strip())

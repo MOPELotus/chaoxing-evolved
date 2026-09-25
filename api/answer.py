@@ -1,6 +1,7 @@
 import base64
 import configparser
 import json
+import hashlib
 import mimetypes
 import os
 import random
@@ -45,9 +46,19 @@ IMAGE_DATA_URL_LOCK = threading.RLock()
 
 
 def normalize_question_title(title: str) -> str:
-    title = sub(r'^\d+', '', title)
+    title = sub(r'^\s*\d+\s*(?=【)', '', title)
+    title = sub(r'^\s*\d+[、．]\s*|^\s*\d+\.\s+', '', title)
     title = sub(r'（\d+\.\d+分）$', '', title)
     return title
+
+
+def answer_cache_key(question: dict) -> str:
+    payload = {key: question.get(key) for key in (
+        "title", "type", "options", "option_items", "material", "image_urls",
+        "material_image_urls", "matching_groups", "blank_count",
+    )}
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return "question-v2:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def extract_image_urls(text: str | None) -> list[str]:
@@ -529,7 +540,7 @@ class Tiku:
         # 先过缓存
         cache_dao = CacheDAO()
         use_legacy_cache = getattr(self, "_response_service", None) is None
-        answer = cache_dao.get_cache(q_info['title']) if use_legacy_cache else None
+        answer = cache_dao.get_cache(answer_cache_key(q_info)) if use_legacy_cache else None
         answer = self._coerce_answer(answer, q_info)
         if self._has_answer(answer):
             logger.info(f"从缓存中获取答案：{q_info['title']} -> {self._answer_display(answer)}")
@@ -540,7 +551,7 @@ class Tiku:
         answer = self._query_validated(q_info)
         if answer:
             if use_legacy_cache:
-                cache_dao.add_cache(q_info['title'], answer)
+                cache_dao.add_cache(answer_cache_key(q_info), answer)
             return answer
         return None
 
@@ -566,15 +577,14 @@ class Tiku:
         for idx, q in enumerate(q_list):
             if not self._is_manual_mode:
                 logger.debug(f"原始标题：{q['title']}")
-            q['title'] = sub(r'^\d+', '', q['title'])
-            q['title'] = sub(r'（\d+\.\d+分）$', '', q['title'])
+            q['title'] = normalize_question_title(q['title'])
             if not self._is_manual_mode:
                 logger.debug(f"处理后标题：{q['title']}")
 
             answer = (
                 None
                 if force_refresh or not use_legacy_cache
-                else cache_dao.get_cache(q['title'])
+                else cache_dao.get_cache(answer_cache_key(q))
             )
             answer = self._coerce_answer(answer, q)
             if self._has_answer(answer):
@@ -604,9 +614,7 @@ class Tiku:
         elif len(sub_results) != len(pending_indices):
             logger.error(
                 f"{self.name} _query_all 返回结果长度不匹配，期望 {len(pending_indices)}，实际 {len(sub_results)}")
-            # 补齐或截断 sub_results 防止错位
-            sub_results = list(sub_results) + [None] * (len(pending_indices) - len(sub_results))
-            sub_results = sub_results[:len(pending_indices)]
+            sub_results = [None] * len(pending_indices)
 
         for idx, ans in zip(pending_indices, sub_results):
             q_info = q_list[idx]
@@ -615,7 +623,7 @@ class Tiku:
                 logger.info(f"从{self.name}获取答案：{q_info['title']} -> {self._answer_display(ans)}")
                 if check_answer(ans, q_info['type'], self):
                     if use_legacy_cache:
-                        cache_dao.add_cache(q_info['title'], ans)
+                        cache_dao.add_cache(answer_cache_key(q_info), ans)
                     results[idx] = ans
                 else:
                     logger.info(f"从{self.name}获取到的答案类型与题目类型不符，已舍弃")

@@ -22,8 +22,9 @@ from requests.adapters import HTTPAdapter
 from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception
 from tqdm import tqdm
 
-from api.answer import Tiku, TikuManual
-from api.answer_check import cut
+from api.answer import Tiku, TikuManual, answer_cache_key
+from api.guess_retry import GuessRetryLedger, combination_key, guess_retry_settings, next_guess, work_feedback
+from api.answer_check import cut, check_judgement
 from api.cipher import AESCipher
 from api.config import GlobalConst as gc
 from api.cookies import save_cookies, use_cookies
@@ -185,7 +186,7 @@ def multi_cut(answer: str, origin_html_content="", logger=logger):
 
 
 CHOICE_PREFIX_PATTERN = re.compile(
-    r'^\s*(?:[A-Za-z]|\d+)\s*(?:[.、:：)?）]|\s+)\s*'
+    r'^\s*(?:[A-Za-z]\s*[.、:：)）]|\d+\s*[、:：)）]|\d+\.\s+)\s*'
 )
 
 
@@ -214,9 +215,7 @@ def normalize_text(text: str) -> str:
         '⻢': '马',
     })
     normalized = text.translate(char_map)
-    normalized = CHOICE_PREFIX_PATTERN.sub('', normalized, count=1)
     normalized = re.sub(r'\s+', '', normalized)
-    normalized = re.sub(r'[，。！？；：,.!?;:()（）\[\]【】"“”‘’\-_/\\|]', '', normalized)
     return normalized.lower()
 
 
@@ -271,20 +270,13 @@ def _match_option_text(target: str, options: list[str], threshold: float = 0.8) 
         return ""
 
     normalized_options = [normalize_text(get_option_text(option)) for option in options]
-    for index, option_norm in enumerate(normalized_options):
-        if option_norm and target_norm == option_norm:
-            return option_letter(index)
-    for index, option_norm in enumerate(normalized_options):
-        if option_norm and min(len(target_norm), len(option_norm)) >= 4 and (
-            target_norm in option_norm or option_norm in target_norm
-        ):
-            return option_letter(index)
-    return best_option_by_similarity(target, options, threshold=threshold)
+    matches = [index for index, option in enumerate(normalized_options) if option == target_norm]
+    return option_letter(matches[0]) if len(matches) == 1 else ""
 
 
 def map_choice_answer(value, options: list[str], multiple: bool = False) -> str:
     """Map model letters, indices, or option text to Chaoxing A/B/C values."""
-    if not options or value is None:
+    if not options or len(options) > 26 or value is None:
         return ""
     text = str(value).strip()
     if not text:
@@ -292,7 +284,11 @@ def map_choice_answer(value, options: list[str], multiple: bool = False) -> str:
 
     explicit = _explicit_choice_letters(text, len(options))
     if explicit:
-        return "".join(sorted(explicit)) if multiple else explicit[0]
+        return "".join(sorted(explicit)) if multiple else (explicit[0] if len(explicit) == 1 else "")
+
+    exact = _match_option_text(text, options)
+    if exact:
+        return exact
 
     parts = (
         [part.strip() for part in re.split(r'[\n\r\t,，|#、]+', text) if part.strip()]
@@ -305,14 +301,16 @@ def map_choice_answer(value, options: list[str], multiple: bool = False) -> str:
         if explicit:
             matched_letters.extend(explicit)
             continue
+        matched = _match_option_text(part, options)
+        if matched:
+            matched_letters.append(matched)
+            continue
         if part.isdigit():
             option_index = int(part) - 1
             if 0 <= option_index < len(options):
                 matched_letters.append(option_letter(option_index))
                 continue
-        matched = _match_option_text(part, options)
-        if matched:
-            matched_letters.append(matched)
+        return ""
 
     letters = list(dict.fromkeys(matched_letters))
     if multiple:
@@ -463,11 +461,12 @@ def completion_answer_items(value, expected_count: int = 0) -> list[str]:
                         item = item[key]
                         break
             text = str(item).strip()
-            if text:
-                items.append(text)
+            if item is None or isinstance(item, (Mapping, list, tuple)):
+                return []
+            items.append(text)
         return items
 
-    text = str(value or "").strip()
+    text = str(value if value is not None else "").strip()
     if not text:
         return []
     if expected_count > 1:
@@ -475,7 +474,7 @@ def completion_answer_items(value, expected_count: int = 0) -> list[str]:
         if len(separated) == expected_count:
             return separated
         compact = re.sub(r"\s+", "", text)
-        if len(compact) == expected_count:
+        if len(compact) == expected_count and re.fullmatch(r"[A-Z]+", compact):
             return list(compact)
     return [text]
 
@@ -556,16 +555,27 @@ def matching_submission_answer(value, question: Mapping) -> str:
     return json.dumps(encoded, ensure_ascii=False, separators=(",", ":"))
 
 
+def has_visible_answer(value) -> bool:
+    if value is None:
+        return False
+    document = BeautifulSoup(str(value), "html.parser")
+    for node in document.select("script, style, template"):
+        node.decompose()
+    return bool(document.get_text().replace("\u200b", "").replace("\ufeff", "").strip())
+
+
 def prepare_submission_answer(value, question: dict) -> tuple[str, dict[str, str]]:
     """Build the displayed answer and any native per-control form fields."""
     q_type = str(question.get("type") or "")
     if q_type == "matching":
         return matching_submission_answer(value, question), {}
-    if q_type == "completion":
+    if q_type in {"completion", "shortanswer", "calculation"}:
         fields = [str(item) for item in question.get("answer_fields") or []]
         if fields:
+            if q_type != "completion" and len(fields) != 1:
+                return "", {}
             items = completion_answer_items(value, len(fields))
-            if len(items) != len(fields):
+            if len(items) != len(fields) or not all(has_visible_answer(item) for item in items):
                 return "", {}
             # Each blank is a UEditor control. jQuery serializes its HTML
             # content (normally ``<p>answer</p>``), not a synthetic
@@ -576,7 +586,10 @@ def prepare_submission_answer(value, question: dict) -> tuple[str, dict[str, str
                 for item in items
             ]
             return "".join(items), dict(zip(fields, native_items))
-    return submission_answer(value, question), {}
+        field = question.get("native_answer_field")
+        if field and q_type != "completion" and isinstance(value, str) and has_visible_answer(value):
+            return value.strip(), {field: value.strip()}
+    return "", {}
 
 
 def resolve_work_submit_url(html: str, response_url: str) -> str:
@@ -620,6 +633,7 @@ class Chaoxing:
         self.video_log_limiter = RateLimiter(2)  # 上报进度极其容易卡验证码，限制2s一次
         self._captcha_lock = threading.Lock()
         self._fatal_task_error = ""
+        self._guess_work_lock = threading.Lock()
 
     @staticmethod
     def _is_captcha_response(response: requests.Response) -> bool:
@@ -884,7 +898,8 @@ class Chaoxing:
         _url = f"https://mooc2-ans.chaoxing.com/mooc2-ans/mycourse/studentcourse?courseid={_courseid}&clazzid={_clazzid}&cpi={_cpi}&ut=s"
         logger.trace("URL: " + _url)
         logger.trace("开始读取课程所有章节...")
-        _resp = _session.get(_url)
+        _resp = _session.get(_url, timeout=30)
+        _resp.raise_for_status()
 
         logger.trace(f"原始章节列表内容:\n{_resp.text}")
         logger.info("课程章节读取成功...")
@@ -1290,7 +1305,43 @@ class Chaoxing:
             return StudyResult.SUCCESS
 
     def study_work(self, _course, _job, _job_info, force_ai_refresh: bool = False) -> StudyResult:
-        if self.tiku.DISABLE or not self.tiku:
+        config = getattr(self.tiku, "_conf", {}) or {}
+        enabled, limit = guess_retry_settings(config)
+        if not enabled or not self.tiku or self.tiku.DISABLE or self.tiku.get_submit_params() == "1":
+            return self._study_work_once(_course, _job, _job_info, force_ai_refresh)
+        with self._guess_work_lock:
+            ledger = GuessRetryLedger()
+            key = ledger.work_key(_course, _job, _job_info)
+            try:
+                previous = ledger.get(key)
+                if previous is not None:
+                    logger.warning("该测验已有猜答流程记录，不自动重新提交或重置次数: {}", _job.get("jobid"))
+                    return StudyResult.SUCCESS if previous.get("status") == "complete" else StudyResult.ERROR
+                state = {"ledger": ledger, "key": key, "attempts": 0, "seen": set(), "feedback": "unknown"}
+                for attempt in range(limit + 1):
+                    state["guessing"] = attempt > 0
+                    state["feedback"] = "unknown"
+                    result = self._study_work_once(_course, _job, _job_info, force_ai_refresh, state)
+                    if not result.is_success():
+                        return result
+                    if state["feedback"] == "complete":
+                        ledger.record(key, "complete", state["attempts"], state["seen"])
+                        return StudyResult.SUCCESS
+                    if state["feedback"] != "retryable":
+                        logger.warning("提交后未能确认通过状态或重做权限，停止猜答，不重复提交")
+                        return StudyResult.ERROR
+                    if attempt < limit:
+                        logger.warning("平台明确未通过，准备有限猜答重做 {}/{}（仅单选和判断）", attempt + 1, limit)
+                        time.sleep(2)
+                ledger.record(key, "exhausted", state["attempts"], state["seen"])
+                logger.warning("猜答重做已达到上限，保留未完成状态")
+                return StudyResult.ERROR
+            except (RequestException, ValueError, OSError) as exc:
+                logger.warning("猜答流程中止，提交状态不明时禁止自动重交: {}", type(exc).__name__)
+                return StudyResult.ERROR
+
+    def _study_work_once(self, _course, _job, _job_info, force_ai_refresh=False, guess_state=None) -> StudyResult:
+        if not self.tiku or self.tiku.DISABLE:
             return StudyResult.SUCCESS
 
         # Some course cards expose the deadline/status before the work page is
@@ -1374,28 +1425,37 @@ class Chaoxing:
         total_questions = len(questions["questions"])
         found_answers = 0
         query_delay = self.kwargs.get("query_delay", 0)
-        answers = self.tiku.query_all(
-            questions["questions"],
-            query_delay=query_delay,
-            force_refresh=force_ai_refresh,
-        )
+        question_keys = [(question["id"], answer_cache_key(question)) for question in questions["questions"]]
+        guessing = guess_state is not None and guess_state["guessing"]
+        if guessing:
+            if work_feedback(final_resp.text) != "retryable" or question_keys != guess_state["question_keys"]:
+                logger.warning("重做权限或题目内容已变化，停止猜答")
+                return StudyResult.ERROR
+            candidate = next_guess(guess_state["domains"], guess_state["seen"])
+            if candidate is None:
+                logger.warning("没有未尝试的单选/判断答案组合，停止猜答")
+                return StudyResult.ERROR
+            answers = list(guess_state["answers"])
+            for index, answer in zip(guess_state["indices"], candidate):
+                answers[index] = answer
+        else:
+            answers = self.tiku.query_all(
+                questions["questions"],
+                query_delay=query_delay,
+                force_refresh=force_ai_refresh,
+            )
 
-        if not isinstance(answers, list):
-            logger.error("题库 query_all 返回的数据格式异常，期望列表。将采用随机答案答题")
-            answers = [None] * total_questions
-        elif len(answers) != total_questions:
-            logger.error(
-                f"题库返回的答案数量（{len(answers)}）与题目数量（{total_questions}）不匹配，正在补齐或截断以防错位！")
-            answers = list(answers) + [None] * (total_questions - len(answers))
-            answers = answers[:total_questions]
+        if not isinstance(answers, list) or len(answers) != total_questions:
+            logger.error("答案列表格式或数量不匹配，停止提交以防答案错位")
+            return StudyResult.ERROR
 
-        for q, res in zip(questions["questions"], answers):
+        guess_indices, guess_domains, guess_values = [], [], []
+        for question_index, (q, res) in enumerate(zip(questions["questions"], answers)):
             logger.debug(f"当前题目信息 -> {q}")
             answer = ""
-            if not res:
-                # 随机答题
-                answer = random_answer(q.get("option_items") or q["options"], q["type"])
-                q[f'answerSource{q["id"]}'] = "random"
+            if res is None or res == "":
+                answer = ""
+                q[f'answerSource{q["id"]}'] = "missing"
             else:
                 # 根据响应结果选择答案
                 if q["type"] == "multiple":
@@ -1408,35 +1468,55 @@ class Chaoxing:
                     answer = map_choice_answer(res, options_list)
                 elif q["type"] == "judgement":
                     res = submission_answer(res, q)
-                    answer = "true" if self.tiku.judgement_select(res) else "false"
+                    judgement = check_judgement(res, self.tiku.true_list, self.tiku.false_list)
+                    answer = {1: "true", 0: "false"}.get(judgement, "")
                 else:
                     answer, native_fields = prepare_submission_answer(res, q)
                     q["submission_fields"] = native_fields
 
+                if answer and q["type"] in {"single", "multiple"}:
+                    native_values = q.get("option_values") or []
+                    if any(native_values):
+                        if (
+                            len(native_values) != len(options_list)
+                            or not all(re.fullmatch(r"[A-Z]", item) for item in native_values)
+                            or len(set(native_values)) != len(native_values)
+                        ):
+                            answer = ""
+                        else:
+                            answer = "".join(native_values[ord(letter) - ord("A")] for letter in answer)
+
+                if q["type"] in {"single", "judgement"} and answer:
+                    if q["type"] == "single":
+                        native_values = q.get("option_values") or []
+                        display_answer = option_letter(native_values.index(answer)) if any(native_values) else answer
+                        domain = [option_letter(index) for index in range(len(options_list))]
+                    else:
+                        display_answer = answer
+                        domain = ["true", "false"]
+                    guess_indices.append(question_index)
+                    guess_domains.append(domain)
+                    guess_values.append(display_answer)
                 if not answer:  # 检查 answer 是否为空
-                    logger.warning(f"找到答案但答案未能匹配 -> {res}\t随机选择答案")
-                    answer = random_answer(q.get("option_items") or q["options"], q["type"])  # 如果为空，则随机选择答案
-                    q[f'answerSource{q["id"]}'] = "random"
+                    logger.warning(f"答案未能完整匹配，禁止正式提交 -> {res}")
+                    answer = ""
+                    q[f'answerSource{q["id"]}'] = "invalid"
                 else:
                     logger.info(f"成功获取到答案：{answer}")
-                    q[f'answerSource{q["id"]}'] = "cover"
+                    q[f'answerSource{q["id"]}'] = "guess" if guessing and q["type"] in {"single", "judgement"} else "cover"
                     found_answers += 1
             # 填充答案
             q["answerField"][f'answer{q["id"]}'] = answer
             logger.info(f'{q["title"]} 填写答案为 {answer}')
         cover_rate = (found_answers / total_questions) * 100
-        logger.info(f"章节检测题库覆盖率： {cover_rate:.0f}%")
+        if guessing:
+            logger.info("猜答重做答案完整率：{:.0f}%（不计入题库覆盖率）", cover_rate)
+        else:
+            logger.info(f"章节检测题库覆盖率： {cover_rate:.0f}%")
         # 提交模式  现在与题库绑定,留空直接提交, 1保存但不提交
-        is_manual_mode = (
-                getattr(self.tiku, 'is_manual', False) or
-                self.tiku.__class__.__name__ == 'TikuManual' or
-                (self.tiku.__class__.__name__ == 'TikuFallback' and any(
-                    getattr(p, 'is_manual', False) or p.__class__.__name__ == 'TikuManual' for p in
-                    getattr(self.tiku, 'providers', [])))
-        )
         if self.tiku.get_submit_params() == "1":
             questions["pyFlag"] = "1"
-        elif is_manual_mode or cover_rate >= self.tiku.COVER_RATE * 100 or self.rollback_times >= 1:
+        elif found_answers == total_questions and cover_rate >= self.tiku.COVER_RATE * 100:
             questions["pyFlag"] = ""
         else:
             questions["pyFlag"] = "1"
@@ -1444,6 +1524,19 @@ class Chaoxing:
         # 组建提交表单。多编辑框填空题只能提交页面实际存在的
         # answerEditor* 字段，不能再虚构 answer{question_id}。
         questions = assemble_work_submission(questions)
+
+        if found_answers != total_questions:
+            logger.warning("存在空白、无效或不支持的答案，停止提交与保存，保留平台已有作答")
+            return StudyResult.ERROR
+
+        if guess_state is not None:
+            if questions["pyFlag"] != "":
+                logger.warning("未满足正式提交条件，不进入猜答流程")
+                return StudyResult.ERROR
+            if not guessing:
+                guess_state.update(question_keys=question_keys, answers=list(answers), indices=guess_indices, domains=guess_domains)
+            if guessing and not guess_indices:
+                return StudyResult.ERROR
 
         submit_url = resolve_work_submit_url(final_resp.text, final_resp.url)
         try:
@@ -1467,6 +1560,14 @@ class Chaoxing:
         if validation_data.get("status") not in {2, 3}:
             logger.warning("提交前账号校验返回未知状态: {}", validation_data)
             return StudyResult.ERROR
+        if guess_state is not None:
+            signature = combination_key(guess_values)
+            if signature in guess_state["seen"]:
+                logger.warning("答案组合已提交过，禁止重复猜答")
+                return StudyResult.ERROR
+            guess_state["seen"].add(signature)
+            guess_state["attempts"] += 1
+            guess_state["ledger"].record(guess_state["key"], "pending", guess_state["attempts"], guess_state["seen"])
         res = _session.post(
             submit_url,
             params={
@@ -1514,6 +1615,8 @@ class Chaoxing:
                         completion_url,
                         headers={"Referer": final_resp.url},
                     )
+                    if guess_state is not None and completion_resp.status_code == 200:
+                        guess_state["feedback"] = work_feedback(completion_resp.text)
                     if completion_resp.status_code != 200:
                         logger.warning(
                             "答题已提交，但任务点确认页面返回异常状态: {}",
@@ -1540,23 +1643,43 @@ class Chaoxing:
         """
         阅读任务学习, 仅完成任务点, 并不增长时长
         """
+        if not _job.get("jobid") or not _job.get("jtoken"):
+            logger.warning("阅读任务缺少有效任务标识，停止提交")
+            return StudyResult.ERROR
+        try:
+            required_seconds = float(_job.get("readtime") or 0)
+        except (ValueError, TypeError):
+            required_seconds = -1
+        if required_seconds != 0:
+            logger.warning("阅读任务有时长要求或要求不明，请通过阅读页面完成，不直接标记通过")
+            return StudyResult.ERROR
         _session = SessionManager.get_session()
         _resp = _session.get(
-            url="https://mooc1.chaoxing.com/ananas/job/readv2",
+            url="https://mooc1.chaoxing.com/mooc-ans/job/readv2",
             params={
                 "jobid": _job["jobid"],
                 "knowledgeid": _job_info["knowledgeid"],
                 "jtoken": _job["jtoken"],
                 "courseid": _course["courseId"],
                 "clazzid": _course["clazzId"],
+                "checkMicroTopic": "true",
+                "microTopicId": _job.get("microTopicId", 0),
+                "courseEngineInfo": "false",
             },
         )
         if _resp.status_code != 200:
             logger.error(f"阅读任务学习失败 -> [{_resp.status_code}]{_resp.text}")
             return StudyResult.ERROR
         else:
-            _resp_json = _resp.json()
-            logger.info(f"阅读任务学习 -> {_resp_json['msg']}")
+            try:
+                _resp_json = _resp.json()
+            except ValueError:
+                logger.warning("阅读接口未返回有效结果，不能判为完成")
+                return StudyResult.ERROR
+            if not isinstance(_resp_json, dict) or _resp_json.get("status") not in (True, 1):
+                logger.warning("阅读接口未确认任务完成")
+                return StudyResult.ERROR
+            logger.info("阅读任务学习 -> {}", _resp_json.get("msg", "平台已接受"))
             return StudyResult.SUCCESS
 
     def study_read_duration(self, _course, _job_info, duration_seconds) -> StudyResult:

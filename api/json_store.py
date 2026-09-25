@@ -137,6 +137,8 @@ DEFAULT_PROFILE = {
         "check_llm_connection": True,
         "submit": False,
         "cover_rate": 0.9,
+        "guess_retry_enabled": False,
+        "guess_retry_limit": 3,
         "delay": 1.0,
         "tokens": None,
         "likeapi_search": None,
@@ -213,6 +215,7 @@ def profile_sidecar_paths(name: str) -> list[Path]:
     return [
         profile_path.with_suffix(".cookies.txt"),
         profile_path.with_suffix(".cache.json"),
+        profile_path.with_suffix(".guess-retry.cache.json"),
     ]
 
 

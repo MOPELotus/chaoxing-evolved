@@ -15,6 +15,7 @@ from tqdm import tqdm
 from api.answer import Tiku
 from api.base import Account, Chaoxing, StudyResult, is_expired_task_text
 from api.course_selection import course_class_key, course_matches_selection
+from api.course_report import log_course_report
 from api.exceptions import LoginError
 from api.json_store import (
     build_config_sections,
@@ -488,7 +489,7 @@ def process_chapter(
     # cases enter the existing retry/AI-refresh path instead of being reported
     # as locally successful.
     requires_confirmation = is_challenge_point(point) or any(
-        job.get("type") in {"live", "workid"} for job in jobs
+        job.get("type") in {"live", "workid", "read"} for job in jobs
     )
     if not requires_confirmation:
         return ChapterResult.SUCCESS
@@ -522,6 +523,7 @@ def process_chapter(
 
 
 def process_course(chaoxing: Chaoxing, course: dict[str, Any], config: dict[str, Any]) -> None:
+    chaoxing._fatal_task_error = ""
     logger.info(f"开始学习课程: {course['title']}")
     point_list = chaoxing.get_course_point(course["courseId"], course["clazzId"], course["cpi"])
 
@@ -533,20 +535,22 @@ def process_course(chaoxing: Chaoxing, course: dict[str, Any], config: dict[str,
     for index, point in enumerate(point_list["points"]):
         tasks.append(ChapterTask(point=point, index=index))
 
-    processor = JobProcessor(chaoxing, course, tasks, config)
-    processor.run()
-    if processor.fatal_error:
-        raise RuntimeError(f"课程 [{course['title']}] 已停止: {processor.fatal_error}")
-    if processor.failed_tasks:
-        failed_titles = ", ".join(task.point.get("title", "") for task in processor.failed_tasks)
-        raise RuntimeError(f"课程 [{course['title']}] 存在未完成章节: {failed_titles}")
-    if to_bool(config.get("add_learning_count", False)):
-        target_count = max(0, int(config.get("target_count", 100) or 0))
-        logger.info(f"开始增加课程章节学习次数，本次计划: {target_count}")
-        result = chaoxing.increase_chapter_learning_count(course, point_list["points"], target_count)
-        if result.is_failure():
-            raise RuntimeError(f"课程 [{course['title']}] 章节学习次数增加失败")
-    tqdm.format_sizeof = old_format_sizeof
+    try:
+        processor = JobProcessor(chaoxing, course, tasks, config)
+        processor.run()
+        if processor.fatal_error:
+            raise RuntimeError(f"课程 [{course['title']}] 已停止: {processor.fatal_error}")
+        if processor.failed_tasks:
+            failed_titles = ", ".join(task.point.get("title", "") for task in processor.failed_tasks)
+            raise RuntimeError(f"课程 [{course['title']}] 存在未完成章节: {failed_titles}")
+        if to_bool(config.get("add_learning_count", False)):
+            target_count = max(0, int(config.get("target_count", 100) or 0))
+            logger.info(f"开始增加课程章节学习次数，本次计划: {target_count}")
+            result = chaoxing.increase_chapter_learning_count(course, point_list["points"], target_count)
+            if result.is_failure():
+                raise RuntimeError(f"课程 [{course['title']}] 章节学习次数增加失败")
+    finally:
+        tqdm.format_sizeof = old_format_sizeof
 
 
 def filter_courses(all_course: list[dict], course_list: list[str]) -> list[dict]:
@@ -584,6 +588,10 @@ def format_time(num, suffix="", divisor=""):
 
 
 def run_loaded_profile(profile: dict, global_settings: dict | None = None) -> None:
+    started_at = time.monotonic()
+    course_task = []
+    outcomes = []
+    chaoxing = None
     try:
         common_config, tiku_config, _notification_config, effective_profile = build_runner_config(profile, global_settings)
 
@@ -602,16 +610,47 @@ def run_loaded_profile(profile: dict, global_settings: dict | None = None) -> No
         course_task = filter_courses(all_course, common_config.get("course_list", []))
 
         logger.info(f"课程列表过滤完毕, 当前课程任务数量: {len(course_task)}")
-        for course in course_task:
-            process_course(chaoxing, course, common_config)
+        outcomes = ["未执行"] * len(course_task)
+        course_failures = []
+        for index, course in enumerate(course_task):
+            outcomes[index] = "执行中"
+            try:
+                process_course(chaoxing, course, common_config)
+            except Exception as exc:
+                outcomes[index] = "执行失败"
+                course_failures.append((course, exc))
+                logger.error(
+                    "课程 [{}]（班级 {}）执行失败：{}: {}；记录失败，继续后续课程（剩余 {} 门）",
+                    course.get("title", ""), course.get("clazzId", ""), type(exc).__name__, exc,
+                    len(course_task) - index - 1,
+                )
+            except BaseException:
+                outcomes[index] = "已中断"
+                raise
+            else:
+                outcomes[index] = "执行结束"
 
-        logger.info("所有课程学习任务已完成")
+        logger.info("所有课程执行流程已结束，实际完成情况以平台汇总为准")
+        if course_failures:
+            failed_courses = "、".join(
+                f"{course.get('title', '')}（班级 {course.get('clazzId', '')}）"
+                for course, error in course_failures
+            )
+            raise RuntimeError(
+                f"所选 {len(course_task)} 门课程均已尝试，其中 {len(course_failures)} 门执行失败：{failed_courses}"
+            ) from course_failures[0][1]
     except KeyboardInterrupt as exc:
         logger.error(f"错误: 程序被用户手动中断, {exc}")
         raise
     except BaseException as exc:
         logger.error(f"错误: {type(exc).__name__}: {exc}")
         raise
+    finally:
+        if chaoxing is not None and course_task:
+            try:
+                log_course_report(chaoxing, course_task, outcomes, time.monotonic() - started_at)
+            except Exception as exc:
+                logger.warning("课程报告生成失败，不覆盖原运行结果：{}", type(exc).__name__)
 
 
 def run_named_profile(profile_name: str) -> None:

@@ -11,9 +11,13 @@ import base64
 import hashlib
 import json
 import mimetypes
+import math
 import os
 import re
 import threading
+import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -32,7 +36,7 @@ _MEDIA_KEYS = {
 }
 _QUESTION_IMAGE_PATTERN = re.compile(r"\[QUESTION_IMAGE:([^\]]+)\]", re.IGNORECASE)
 _HTML_IMAGE_PATTERN = re.compile(r"<img[^>]+(?:src|data-original)=[\"']([^\"']+)", re.IGNORECASE)
-_CHOICE_PREFIX_PATTERN = re.compile(r"^\s*(?:[A-Za-z]|\d+)\s*[.、:：)）]\s*")
+_CHOICE_PREFIX_PATTERN = re.compile(r"^\s*(?:[A-Za-z]\s*[.、:：)）]|\d+\s*[、:：)）]|\d+\.\s+)\s*")
 
 
 def _sniff_image_mime(content: bytes) -> str:
@@ -152,7 +156,12 @@ class ResponsesAnswerService:
         # bypassed unless this profile switch is enabled.
         self.semantic_cache_enabled = _as_bool(self.config.get("semantic_cache_enabled"), False)
         self.timeout = max(10.0, float(self.config.get("request_timeout_seconds") or self.config.get("timeout_seconds") or 180))
-        self.retry_attempts = max(0, int(self.config.get("retry_attempts") or 2))
+        retries = self.config.get("retry_attempts")
+        self.retry_attempts = max(0, int(retries if retries not in (None, "") else 4))
+        retry_delay = self.config.get("retry_delay_seconds")
+        self.retry_delay_seconds = max(0.0, float(retry_delay if retry_delay not in (None, "") else 2.0))
+        if not math.isfinite(self.retry_delay_seconds):
+            self.retry_delay_seconds = 2.0
 
     def _select_site(self) -> ResponseSite:
         raw_sites = self.config.get("ai_sites") or self.config.get("sites") or {}
@@ -370,7 +379,7 @@ class ResponsesAnswerService:
         # the visible option text is already present in options.
         question_payload.pop("option_items", None)
         question_payload = self._sanitize_question_payload(question_payload)
-        payload = {"question": question_payload, "question_type": question_type}
+        payload = {"question": question_payload, "question_type": question_type, "response_format": "Return a JSON object with answer and confidence."}
         content = [{"type": "input_text", "text": json.dumps(payload, ensure_ascii=False, sort_keys=True)}]
         content.extend(self._media_blocks(question))
         if self.site.protocol == "responses":
@@ -382,10 +391,22 @@ class ResponsesAnswerService:
                 "text": {"format": {"type": "json_object"}},
                 "store": False,
             }
-        return {"model": self.model, "messages": [{"role": "system", "content": instruction}, {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}], "response_format": {"type": "json_object"}, "temperature": 0}
+        chat_content = []
+        for block in content:
+            if block["type"] == "input_text":
+                chat_content.append({"type": "text", "text": block["text"]})
+            elif block["type"] == "input_image":
+                chat_content.append({"type": "image_url", "image_url": {"url": block["image_url"], "detail": "auto"}})
+            else:
+                raise ValueError("当前 Chat Completions 路径不支持该附件类型")
+        return {"model": self.model, "messages": [{"role": "system", "content": instruction}, {"role": "user", "content": chat_content}], "response_format": {"type": "json_object"}, "temperature": 0}
 
     @staticmethod
     def parse_response(body: Mapping[str, Any], protocol: str) -> dict[str, Any]:
+        if not isinstance(body, Mapping):
+            raise RuntimeError("AI response body must be a JSON object")
+        if body.get("error") or body.get("status") in {"failed", "incomplete", "cancelled", "queued", "in_progress"}:
+            raise RuntimeError("AI response failed or was not completed")
         text = body.get("output_text") if protocol == "responses" else None
         if not isinstance(text, str) and protocol == "responses":
             for item in body.get("output", []) if isinstance(body.get("output"), list) else []:
@@ -395,7 +416,11 @@ class ResponsesAnswerService:
                         break
         if not isinstance(text, str):
             choices = body.get("choices", [])
-            text = choices[0].get("message", {}).get("content") if choices else None
+            first = choices[0] if isinstance(choices, list) and choices else None
+            message = first.get("message") if isinstance(first, Mapping) else None
+            if isinstance(first, Mapping) and first.get("finish_reason") in {"length", "content_filter"}:
+                raise RuntimeError("AI response was truncated or filtered")
+            text = message.get("content") if isinstance(message, Mapping) else None
         if not isinstance(text, str) or not text.strip():
             raise RuntimeError("AI response did not contain text")
         cleaned = text.strip()
@@ -416,15 +441,46 @@ class ResponsesAnswerService:
             return None
         if isinstance(answer, Mapping):
             if set(answer) == {"text"}:
-                return answer["text"]
+                return ResponsesAnswerService._answer_value(answer["text"])
             if set(answer) == {"option"}:
-                return answer["option"]
+                return ResponsesAnswerService._answer_value(answer["option"])
             if set(answer) == {"options"}:
-                return answer["options"]
+                return ResponsesAnswerService._answer_value(answer["options"])
             return answer
         if isinstance(answer, list):
             return answer
         return str(answer).strip()
+
+    @staticmethod
+    def _has_answer_content(answer: Any) -> bool:
+        if isinstance(answer, Mapping):
+            return bool(answer) and any(ResponsesAnswerService._has_answer_content(item) for item in answer.values())
+        if isinstance(answer, (list, tuple)):
+            return bool(answer) and all(ResponsesAnswerService._has_answer_content(item) for item in answer)
+        if answer is None:
+            return False
+        if isinstance(answer, str):
+            return bool(answer.strip())
+        return True
+
+    def _retry_delay(self, attempt: int, error: Exception) -> float:
+        delay = min(60.0, self.retry_delay_seconds * 2 ** min(attempt, 10))
+        if isinstance(error, httpx.HTTPStatusError):
+            header = error.response.headers.get("Retry-After", "")
+            if header:
+                try:
+                    requested = float(header)
+                except ValueError:
+                    try:
+                        retry_at = parsedate_to_datetime(header)
+                        if retry_at.tzinfo is None:
+                            retry_at = retry_at.replace(tzinfo=timezone.utc)
+                        requested = (retry_at - datetime.now(timezone.utc)).total_seconds()
+                    except (ValueError, TypeError, OverflowError):
+                        requested = 0
+                if math.isfinite(requested):
+                    delay = max(delay, min(300.0, max(0.0, requested)))
+        return delay
 
     def answer(self, question: Mapping[str, Any], force_refresh: bool = False) -> Any | None:
         if not self.site.base_url or not self.site.api_key or not self.model:
@@ -432,27 +488,38 @@ class ResponsesAnswerService:
         key = question_cache_key(question, self.site, self.model, self.reasoning_effort)
         if self.cache is not None and self.semantic_cache_enabled and not force_refresh:
             cached = self.cache.get_cache(f"ai:{key}")
-            if cached:
+            if self._has_answer_content(cached):
                 return cached
         request = self.build_request(question)
         headers = {"Authorization": f"Bearer {self.site.api_key}", "Content-Type": "application/json"}
         last_error: Exception | None = None
         with self._lock:
-            for _ in range(self.retry_attempts + 1):
+            for attempt in range(self.retry_attempts + 1):
                 try:
                     with httpx.Client(timeout=self.timeout, proxy=self.config.get("http_proxy") or None) as client:
                         response = client.post(self.site.url(), headers=headers, json=request)
                         response.raise_for_status()
                         parsed = self.parse_response(response.json(), self.site.protocol)
                         answer = self._answer_value(parsed.get("answer"))
-                        if not answer:
+                        if not self._has_answer_content(answer):
                             raise RuntimeError("AI 返回空答案")
                         if self.cache is not None and self.semantic_cache_enabled:
                             self.cache.add_cache(f"ai:{key}", answer)
                         return answer
                 except (httpx.HTTPError, ValueError, RuntimeError) as error:
                     last_error = error
-        logger.error(f"Responses AI 请求失败: {last_error}")
+                    status = error.response.status_code if isinstance(error, httpx.HTTPStatusError) else None
+                    retryable = status is None or status in {408, 409, 425, 429} or 500 <= status < 600
+                    if not retryable or attempt >= self.retry_attempts:
+                        break
+                    delay = self._retry_delay(attempt, error)
+                    logger.warning(
+                        "当前题 AI 请求失败（{}），{} 秒后重试 {}/{}；已成功题目不重跑",
+                        f"HTTP {status}" if status is not None else type(error).__name__,
+                        delay, attempt + 1, self.retry_attempts,
+                    )
+                    time.sleep(delay)
+        logger.error("当前题 AI 请求失败且停止重试：{}", type(last_error).__name__)
         return None
 
     def check_connection(self) -> bool:

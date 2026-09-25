@@ -49,10 +49,10 @@ def check_answer(answer, type, tiku):  # 只会写小杯代码，这里用个tik
         return True
 
     if type == 'single':
-        if check_single(answer) and check_judgement(answer, tiku.true_list, tiku.false_list) == -1:
+        if check_single(answer):
             return True
     elif type == 'multiple':
-        if check_multiple(answer) and check_judgement(answer, tiku.true_list, tiku.false_list) == -1:
+        if check_multiple(answer):
             return True
     elif type == 'completion':
         if check_completion(answer):

@@ -333,7 +333,7 @@ def _process_live_task(card: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
 def _process_read_task(card: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """处理阅读类型任务"""
-    if not (str(card.get("type", "")).lower() == "read" and not card.get("property", {}).get("read", False)):
+    if str(card.get("type", "")).lower() != "read" or not card.get("job") or card.get("isPassed"):
         return None
 
     nested_job = card.get("job") if isinstance(card.get("job"), dict) else {}
@@ -345,6 +345,8 @@ def _process_read_task(card: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "id": property_data.get("id", ""),
         "jobid": card.get("jobid") or nested_job.get("jobid", ""),
         "jtoken": card.get("jtoken") or nested_job.get("jtoken", ""),
+        "readtime": property_data.get("readtime", 0),
+        "microTopicId": card.get("microTopicId", 0),
         "mid": card.get("mid", ""),
         "otherinfo": card.get("otherInfo", "") or nested_job.get("otherInfo", ""),
         "enc": card.get("enc", "") or nested_job.get("enc", ""),
@@ -555,7 +557,8 @@ def _process_question(div_tag, font_decoder=None) -> Dict[str, Any]:
     for li in options_list:
         if getattr(li, "name", "") in {"textarea", "input"}:
             continue
-        option, _, _ = _rich_node_text(li, font_decoder)
+        option_body = li.select_one(".after") if q_type in {"single", "multiple", "judgement"} else None
+        option, _, _ = _rich_node_text(option_body if option_body is not None else li, font_decoder)
         q_options.append(option or _extract_choices(li, font_decoder))
     matching_groups = None
     first_nodes = div_tag.select(".firstUlList > li") or div_tag.select(".firstUlList li")
@@ -572,6 +575,15 @@ def _process_question(div_tag, font_decoder=None) -> Dict[str, Any]:
         q_options = [f"左{i + 1}: {item}" for i, item in enumerate(matching_groups["left"])]
         q_options.extend(f"右{i + 1}: {item}" for i, item in enumerate(matching_groups["right"]))
     option_items = list(q_options)
+    option_values = []
+    if q_type in {"single", "multiple"}:
+        for option_node in options_list:
+            control = option_node.select_one("input[type='radio'][value], input[type='checkbox'][value]")
+            label = option_node.select_one(".num_option[data], .num_option_dx[data], .saveSingleSelect[data]")
+            option_values.append(
+                str(control.get("value")) if control else str(label.get("data")) if label else ""
+            )
+    native_answer = div_tag.find(attrs={"name": f"answer{question_id}"})
     q_options = '\n'.join(option_items)
 
     material_nodes = div_tag.select('.material, .question-material, .data, .case, [class*="material"]')
@@ -591,6 +603,8 @@ def _process_question(div_tag, font_decoder=None) -> Dict[str, Any]:
         "title": q_title,
         "options": q_options,
         "option_items": option_items,
+        "option_values": option_values,
+        "native_answer_field": str(native_answer.get("name")) if native_answer else "",
         "type": q_type,
         "kind": q_type,
         "material": "\n".join(material_parts),
@@ -618,15 +632,16 @@ def _get_question_type(type_code: str) -> str:
         "4": "shortanswer",  # 简答题
         "5": "shortanswer",
         "6": "shortanswer",
-        "8": "completion",
+        "8": "shortanswer",
         "11": "matching",
         "14": "cloze",
         "15": "reading",
         "12": "oral",
-        "13": "listening",
+        "13": "ordering",
         "16": "shared_options",
-        "17": "composite",
-        "7": "ordering",
+        "17": "programming",
+        "7": "shortanswer",
+        "10": "shortanswer",
         "9": "shortanswer",
         "单选": "single", "单选题": "single", "单项选择题": "single",
         "多选": "multiple", "多选题": "multiple", "多项选择题": "multiple", "不定项选择题": "multiple",
