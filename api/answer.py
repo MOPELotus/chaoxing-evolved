@@ -26,6 +26,7 @@ from api.answer_check import check_answer
 from api.logger import logger
 from api.runtime import get_runtime_context
 from api.response_ai import ResponsesAnswerService
+from api.lotus_tiku import LotusAnswerService
 
 # 关闭警告
 disable_warnings(exceptions.InsecureRequestWarning)
@@ -1548,7 +1549,7 @@ class AI(Tiku):
         self.name = 'AI大模型答题'
         self.last_request_time = None
         self._lock = threading.Lock()
-        self._response_service: ResponsesAnswerService | None = None
+        self._response_service: ResponsesAnswerService | LotusAnswerService | None = None
 
     def _is_deepseek_v4(self) -> bool:
         return (
@@ -1708,7 +1709,15 @@ class AI(Tiku):
         # disabled.  This keeps the opt-in switch meaningful for both reads
         # and writes, while preserving the existing CacheDAO path when it is
         # explicitly enabled.
-        self._response_service = ResponsesAnswerService(self._conf)
+        backend = str(self._conf.get('answer_backend') or 'responses')
+        if backend == 'lotus':
+            self._response_service = LotusAnswerService(self._conf)
+            self.name = '荷花题库'
+        elif backend == 'responses':
+            self._response_service = ResponsesAnswerService(self._conf)
+            self.name = 'AI大模型答题'
+        else:
+            raise ValueError('答题来源必须是 responses 或 lotus')
         if self._response_service.semantic_cache_enabled:
             self._response_service.cache = CacheDAO()
         self.endpoint = self._conf.get('endpoint', '')

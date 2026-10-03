@@ -15,6 +15,9 @@ CURRENT_SCHEMA_VERSION = 1
 
 OVERRIDABLE_PROFILE_FIELDS = {
     "tiku": [
+        "answer_backend",
+        "lotus_url",
+        "lotus_token",
         "tokens",
         "endpoint",
         "key",
@@ -66,6 +69,9 @@ DEFAULT_GLOBAL_SETTINGS = {
     },
     "defaults": {
         "tiku": {
+            "answer_backend": "responses",
+            "lotus_url": "https://tiku.lotusshared.cn",
+            "lotus_token": "",
             "tokens": "",
             "endpoint": "",
             "key": "",
@@ -126,6 +132,9 @@ DEFAULT_PROFILE = {
         "reading_duration_seconds": 0,
     },
     "tiku": {
+        "answer_backend": None,
+        "lotus_url": None,
+        "lotus_token": None,
         "provider": "AI",
         "providers": [],
         "decision_provider": "AI",
@@ -431,6 +440,8 @@ def profile_summary(profile: dict, global_settings: dict | None = None) -> dict:
     # AI provider; keep the overview consistent before a profile is re-saved.
     configured_provider = effective_profile["tiku"].get("provider", "")
     effective_provider = "AI" if configured_provider or effective_profile["tiku"].get("providers") else ""
+    if effective_provider and effective_profile["tiku"].get("answer_backend") == "lotus":
+        effective_provider = "荷花题库"
     return {
         "name": effective_profile["name"],
         "provider": effective_provider,

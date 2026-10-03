@@ -71,6 +71,7 @@ from api.json_store import (
     save_global_settings,
     save_json_profile,
 )
+from api.lotus_tiku import ANSWER_BACKENDS, DEFAULT_LOTUS_URL
 from api.course_selection import course_class_key
 from desktop.runtime import RunManager, fetch_courses_for_profile
 
@@ -828,7 +829,7 @@ class HomePage(PageFrame):
         self.overview_layout.setHorizontalSpacing(14)
         self.overview_layout.setVerticalSpacing(14)
 
-        summary_card = SectionCard("AI 答题配置", "快速确认当前配置的 Responses AI 使用情况。", parent=self.overview_widget)
+        summary_card = SectionCard("AI 答题配置", "快速确认当前配置的答题服务使用情况。", parent=self.overview_widget)
         self.summary_label = BodyLabel(summary_card)
         self.summary_label.setWordWrap(True)
         summary_card.body_layout.addWidget(self.summary_label)
@@ -879,7 +880,7 @@ class HomePage(PageFrame):
 
         for name in names:
             profile = load_json_profile(name)
-            provider = profile.get("tiku", {}).get("provider", "未配置") or "未配置"
+            provider = profile_summary(profile).get("provider", "未配置") or "未配置"
             providers[provider] = providers.get(provider, 0) + 1
 
         provider_lines = "\n".join(f"- {provider}: {count}" for provider, count in sorted(providers.items()))
@@ -1168,8 +1169,8 @@ class ProfileEditorPanel(QWidget):
 
     def _build_tiku_card(self) -> None:
         self.tiku_card = SectionCard(
-            "Responses AI",
-            "配置当前使用的 Responses API、模型和思考强度。",
+            "答题服务",
+            "选择答题来源；未启用单独设置时继承全局配置。",
             self.scroll_content,
         )
         top_grid = QGridLayout()
@@ -1180,7 +1181,7 @@ class ProfileEditorPanel(QWidget):
         self.provider_combo.addItems(PROVIDER_OPTIONS)
         self.decision_provider_combo = ComboBox(self.tiku_card)
         self.decision_provider_combo.addItems(DECISION_PROVIDER_OPTIONS)
-        self.check_connection_check = CheckBox("启动时检查大模型连接", self.tiku_card)
+        self.check_connection_check = CheckBox("启动时检查答题服务连接", self.tiku_card)
         self.submit_check = CheckBox("达到覆盖率后自动提交", self.tiku_card)
         self.guess_retry_check = CheckBox("提交未通过后有限猜答（仅单选/判断）", self.tiku_card)
         self.guess_retry_limit_spin = SpinBox(self.tiku_card)
@@ -1202,6 +1203,30 @@ class ProfileEditorPanel(QWidget):
         top_grid.addWidget(self.guess_retry_check, 2, 0)
         top_grid.addWidget(make_field("额外猜答次数上限", self.guess_retry_limit_spin), 2, 1)
         self.tiku_card.body_layout.addLayout(top_grid)
+
+        backend_grid = QGridLayout()
+        self.answer_backend_combo = ComboBox(self.tiku_card)
+        for value, label in ANSWER_BACKENDS.items():
+            self.answer_backend_combo.addItem(label, userData=value)
+        self.answer_backend_override_check = self._create_override_check("tiku", "answer_backend", self.answer_backend_combo, self.tiku_card)
+        self.lotus_url_edit = LineEdit(self.tiku_card)
+        self.lotus_url_edit.setPlaceholderText(DEFAULT_LOTUS_URL)
+        self.lotus_url_override_check = self._create_override_check("tiku", "lotus_url", self.lotus_url_edit, self.tiku_card)
+        self.lotus_token_edit = LineEdit(self.tiku_card)
+        self.lotus_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.lotus_token_edit.setPlaceholderText("荷花题库访问令牌")
+        self.lotus_token_override_check = self._create_override_check("tiku", "lotus_token", self.lotus_token_edit, self.tiku_card)
+        backend_grid.addWidget(make_override_field("答题来源", self.answer_backend_combo, self.answer_backend_override_check, "关闭单独设置时，所有账号跟随全局选择。"), 0, 0, 1, 2)
+        self._lotus_fields = [
+            make_override_field("荷花题库地址", self.lotus_url_edit, self.lotus_url_override_check),
+            make_override_field("荷花题库令牌", self.lotus_token_edit, self.lotus_token_override_check),
+        ]
+        for column, field in enumerate(self._lotus_fields):
+            backend_grid.addWidget(field, 1, column)
+        self.backend_note = CaptionLabel("荷花题库的模型与思考强度由服务端统一配置。", self.tiku_card)
+        self.backend_note.setWordWrap(True)
+        backend_grid.addWidget(self.backend_note, 2, 0, 1, 2)
+        self.tiku_card.body_layout.addLayout(backend_grid)
 
         self.provider_summary = CaptionLabel(self.tiku_card)
         self.provider_summary.setWordWrap(True)
@@ -1322,11 +1347,19 @@ class ProfileEditorPanel(QWidget):
             2,
         )
         self.tiku_card.body_layout.addLayout(ai_grid)
+        self._responses_fields = [detail_grid.itemAtPosition(row, column).widget() for row, column in [(1, 0), (1, 1), (2, 0)]]
+        self._responses_fields.append(ai_grid.itemAtPosition(0, 0).widget())
+        self.answer_backend_combo.currentIndexChanged.connect(self._update_provider_summary)
+        self.answer_backend_override_check.stateChanged.connect(self._update_answer_backend_fields)
+        self._update_answer_backend_fields()
         self.scroll_layout.addWidget(self.tiku_card)
 
         self.provider_combo.currentTextChanged.connect(self._on_provider_combo_changed)
         self.provider_chip_panel.selection_changed.connect(self._on_provider_chips_changed)
         self._wire_dirty_signals(
+            self.answer_backend_combo,
+            self.lotus_url_edit,
+            self.lotus_token_edit,
             self.provider_combo,
             self.decision_provider_combo,
             self.check_connection_check,
@@ -1537,6 +1570,9 @@ class ProfileEditorPanel(QWidget):
             self.notopen_combo,
             self.cookies_path_edit,
             self.cache_path_edit,
+            self.answer_backend_combo,
+            self.lotus_url_edit,
+            self.lotus_token_edit,
             self.provider_combo,
             self.decision_provider_combo,
             self.check_connection_check,
@@ -1633,6 +1669,9 @@ class ProfileEditorPanel(QWidget):
         self.guess_retry_limit_spin.setValue(3)
         self.cover_rate_spin.setValue(0.9)
         self.delay_spin.setValue(1.0)
+        self.answer_backend_combo.setCurrentIndex(max(0, self.answer_backend_combo.findData(tiku_defaults.get("answer_backend", "responses"))))
+        self.lotus_url_edit.setText(str(tiku_defaults.get("lotus_url", DEFAULT_LOTUS_URL) or DEFAULT_LOTUS_URL))
+        self.lotus_token_edit.setText(str(tiku_defaults.get("lotus_token", "") or ""))
         self.tokens_edit.setText(str(tiku_defaults.get("tokens", "") or ""))
         self.ai_endpoint_edit.setText(str(tiku_defaults.get("endpoint", "") or ""))
         self.ai_key_edit.setText(str(tiku_defaults.get("key", "") or ""))
@@ -1722,6 +1761,9 @@ class ProfileEditorPanel(QWidget):
         self.guess_retry_limit_spin.setValue(config_int(tiku.get("guess_retry_limit", 3), 3))
         self.cover_rate_spin.setValue(config_float(tiku.get("cover_rate", 0.9), 0.9))
         self.delay_spin.setValue(config_float(tiku.get("delay", 1.0), 1.0))
+        self.answer_backend_combo.setCurrentIndex(max(0, self.answer_backend_combo.findData(effective_tiku.get("answer_backend", "responses"))))
+        self.lotus_url_edit.setText(str(effective_tiku.get("lotus_url", DEFAULT_LOTUS_URL) or DEFAULT_LOTUS_URL))
+        self.lotus_token_edit.setText(str(effective_tiku.get("lotus_token", "") or ""))
         self.tokens_edit.setText(str(effective_tiku.get("tokens", "") or ""))
         self.ai_endpoint_edit.setText(str(effective_tiku.get("endpoint", "") or ""))
         self.ai_key_edit.setText(str(effective_tiku.get("key", "") or ""))
@@ -1746,6 +1788,9 @@ class ProfileEditorPanel(QWidget):
         self.semantic_cache_check.setChecked(parse_bool(effective_tiku.get("semantic_cache_enabled", False), False))
         self.provider_chip_panel.set_selected(selected_providers)
         for key in [
+            "answer_backend",
+            "lotus_url",
+            "lotus_token",
             "tokens",
             "endpoint",
             "key",
@@ -1890,6 +1935,9 @@ class ProfileEditorPanel(QWidget):
         tiku["guess_retry_limit"] = self.guess_retry_limit_spin.value()
         tiku["cover_rate"] = round(float(self.cover_rate_spin.value()), 2)
         tiku["delay"] = round(float(self.delay_spin.value()), 2)
+        apply_override(tiku, tiku_overrides, "tiku", "answer_backend", self.answer_backend_combo.currentData() or "responses")
+        apply_override(tiku, tiku_overrides, "tiku", "lotus_url", self.lotus_url_edit.text().strip())
+        apply_override(tiku, tiku_overrides, "tiku", "lotus_token", self.lotus_token_edit.text().strip())
         apply_override(tiku, tiku_overrides, "tiku", "tokens", self.tokens_edit.text().strip())
         apply_override(tiku, tiku_overrides, "tiku", "likeapi_search", self.like_search_check.isChecked())
         apply_override(tiku, tiku_overrides, "tiku", "likeapi_vision", self.like_vision_check.isChecked())
@@ -2133,8 +2181,17 @@ class ProfileEditorPanel(QWidget):
         self._update_provider_summary()
         self._mark_dirty()
 
-    def _update_provider_summary(self) -> None:
-        self.provider_summary.setText("当前 AI 答题方式：Responses API。")
+    def _update_provider_summary(self, *_args) -> None:
+        self._update_answer_backend_fields()
+        self.provider_summary.setText(f"当前答题来源：{self.answer_backend_combo.currentText()}。")
+
+    def _update_answer_backend_fields(self, *_args) -> None:
+        lotus = self.answer_backend_combo.currentData() == "lotus"
+        for field in self._lotus_fields:
+            field.setVisible(lotus)
+        self.backend_note.setVisible(lotus)
+        for field in self._responses_fields:
+            field.setVisible(not lotus)
 
     def _mark_dirty(self, *_args) -> None:
         if self._loading or not self._current_profile_name:
@@ -2541,6 +2598,8 @@ class ProfilesPage(PageFrame):
 
 
 class GlobalSettingsPage(PageFrame):
+    settings_saved = pyqtSignal()
+
     def __init__(self, parent=None) -> None:
         super().__init__(
             "全局设置",
@@ -2578,10 +2637,28 @@ class GlobalSettingsPage(PageFrame):
         self.load_settings()
 
     def _build_tiku_defaults_card(self) -> None:
-        self.tiku_card = SectionCard("Responses AI 默认值", "用于维护通用 Responses AI 的默认接口、密钥、模型和代理。", self.scroll.widget())
+        self.tiku_card = SectionCard("答题服务默认值", "全局选择 Responses AI 或荷花题库；账号未单独设置时自动继承。", self.scroll.widget())
         grid = QGridLayout()
         grid.setHorizontalSpacing(16)
         grid.setVerticalSpacing(12)
+
+        self.answer_backend_combo = ComboBox(self.tiku_card)
+        for value, label in ANSWER_BACKENDS.items():
+            self.answer_backend_combo.addItem(label, userData=value)
+        self.lotus_url_edit = LineEdit(self.tiku_card)
+        self.lotus_url_edit.setPlaceholderText(DEFAULT_LOTUS_URL)
+        self.lotus_token_edit = LineEdit(self.tiku_card)
+        self.lotus_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.lotus_token_edit.setPlaceholderText("荷花题库访问令牌")
+        backend_grid = QGridLayout()
+        backend_grid.addWidget(make_field("默认答题来源", self.answer_backend_combo), 0, 0, 1, 2)
+        self._lotus_fields = [make_field("荷花题库地址", self.lotus_url_edit), make_field("荷花题库令牌", self.lotus_token_edit)]
+        for column, field in enumerate(self._lotus_fields):
+            backend_grid.addWidget(field, 1, column)
+        self.backend_note = CaptionLabel("荷花题库使用服务器配置的模型与思考强度，无需填写下方 API 配置。", self.tiku_card)
+        self.backend_note.setWordWrap(True)
+        backend_grid.addWidget(self.backend_note, 2, 0, 1, 2)
+        self.tiku_card.body_layout.addLayout(backend_grid)
 
         self.tokens_edit = LineEdit(self.tiku_card)
         self.tokens_edit.setPlaceholderText("Enncy / LIKE 令牌，多个逗号分隔")
@@ -2635,7 +2712,17 @@ class GlobalSettingsPage(PageFrame):
                 if item and item.widget():
                     item.widget().hide()
         self.tiku_card.body_layout.addLayout(grid)
+        self._responses_fields = [grid.itemAtPosition(row, column).widget() for row, column in [(1, 0), (1, 1), (2, 0)]]
+        self.answer_backend_combo.currentIndexChanged.connect(self._update_answer_backend_fields)
         self.scroll_layout.addWidget(self.tiku_card)
+
+    def _update_answer_backend_fields(self, *_args) -> None:
+        lotus = self.answer_backend_combo.currentData() == "lotus"
+        for field in self._lotus_fields:
+            field.setVisible(lotus)
+        self.backend_note.setVisible(lotus)
+        for field in self._responses_fields:
+            field.setVisible(not lotus)
 
     def _build_notification_defaults_card(self) -> None:
         self.notification_card = SectionCard("通知默认值", "仅在配置未单独填写通知参数时使用。", self.scroll.widget())
@@ -2714,6 +2801,10 @@ class GlobalSettingsPage(PageFrame):
         tiku = defaults.get("tiku", {})
         notification = defaults.get("notification", {})
 
+        self.answer_backend_combo.setCurrentIndex(max(0, self.answer_backend_combo.findData(tiku.get("answer_backend", "responses"))))
+        self.lotus_url_edit.setText(str(tiku.get("lotus_url", DEFAULT_LOTUS_URL) or DEFAULT_LOTUS_URL))
+        self.lotus_token_edit.setText(str(tiku.get("lotus_token", "") or ""))
+        self._update_answer_backend_fields()
         self.tokens_edit.setText(str(tiku.get("tokens", "")))
         self.ai_endpoint_edit.setText(str(tiku.get("endpoint", "")))
         self.ai_key_edit.setText(str(tiku.get("key", "")))
@@ -2768,6 +2859,9 @@ class GlobalSettingsPage(PageFrame):
         )
         settings["defaults"]["tiku"].update(
             {
+                "answer_backend": self.answer_backend_combo.currentData() or "responses",
+                "lotus_url": self.lotus_url_edit.text().strip() or DEFAULT_LOTUS_URL,
+                "lotus_token": self.lotus_token_edit.text().strip(),
                 "tokens": self.tokens_edit.text().strip(),
                 "endpoint": self.ai_endpoint_edit.text().strip(),
                 "key": self.ai_key_edit.text().strip(),
@@ -2808,6 +2902,7 @@ class GlobalSettingsPage(PageFrame):
             }
         )
         save_global_settings(settings)
+        self.settings_saved.emit()
         show_bar(self, "success", "保存成功", "未填写的配置字段将自动继承当前默认值。")
 
 
@@ -2908,6 +3003,8 @@ class DesktopMainWindow(MSFluentWindow):
         self.home_page = HomePage(self.run_manager, self)
         self.profiles_page = ProfilesPage(self.run_manager, self.refresh_profile_dependent_pages, self)
         self.global_settings_page = GlobalSettingsPage(self)
+        self.global_settings_page.settings_saved.connect(self.profiles_page.refresh_profiles)
+        self.global_settings_page.settings_saved.connect(self.refresh_profile_dependent_pages)
 
         self.addSubInterface(self.home_page, FluentIcon.HOME, "概览")
         self.addSubInterface(self.profiles_page, FluentIcon.PEOPLE, "配置管理")
