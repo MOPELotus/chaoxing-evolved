@@ -112,6 +112,14 @@ class LotusTests(unittest.TestCase):
                 self.assertEqual(prepare_submission_answer(answer, question), ('response', {'editor1': '<p>response</p>'}))
                 self.assertEqual(prepare_submission_answer(answer, {'type': kind, 'native_answer_field': 'text1'}), ('response', {'text1': 'response'}))
 
+    def test_error_log_preserves_known_code_without_upstream_text(self):
+        question = {'type': 'single', 'title': 'Choose', 'options': ['A', 'B']}
+        for code, logged in [('NO_ANSWER', 'NO_ANSWER'), ('INVALID_ANSWER', 'INVALID_ANSWER'), ('private-token-value', 'LOTUS_ERROR')]:
+            with patch('api.lotus_tiku.httpx.Client') as client, patch('api.lotus_tiku.logger') as logger:
+                client.return_value.__enter__.return_value.post.return_value = httpx.Response(200, json={'code': 0, 'error': code, 'message': 'private upstream details'}, request=httpx.Request('POST', self.service().url))
+                self.assertIsNone(self.service().answer(question))
+                logger.error.assert_called_once_with('荷花题库请求失败：{}', logged)
+
     def test_configured_interval_between_request_starts(self):
         service = self.service(min_interval_seconds=3)
         question = {'type': 'single', 'title': 'Choose', 'options': ['A', 'B']}

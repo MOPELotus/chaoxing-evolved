@@ -20,6 +20,27 @@ _IMAGE = re.compile(r"\[QUESTION_IMAGE:([^\]]+)\]", re.IGNORECASE)
 _BLANK = re.compile(r"\[BLANK_\d+\]", re.IGNORECASE)
 
 
+# Only known protocol codes enter logs; upstream text can contain private data.
+_LOTUS_ERROR_CODES = frozenset("""
+LOTUS_ERROR LOTUS_FORMAT LOTUS_INVALID_ANSWER INTERNAL_ERROR
+NO_ANSWER INVALID_ANSWER OCS_MATCH_CONFLICT REQUEST_TIMEOUT
+CODEX_AUTH CODEX_FAILED CODEX_LIMIT CODEX_MODEL CODEX_BUSY
+CODEX_OUTPUT_INVALID CODEX_OUTPUT_TOO_LARGE CODEX_START_FAILED CODEX_IPV4_FAILED
+UPSTREAM_ERROR UPSTREAM_FORMAT UPSTREAM_INCOMPLETE UPSTREAM_HTTP_ERROR
+UPSTREAM_TOO_LARGE UPSTREAM_UNAVAILABLE MODEL_REFUSAL
+AMBIGUOUS_OPTIONS INVALID_OPTIONS INVALID_QUESTION UNSUPPORTED_TYPE
+IMAGE_MISSING IMAGE_FETCH_FAILED IMAGE_HOST_BLOCKED IMAGE_TOO_LARGE
+IMAGES_TOO_LARGE IMAGE_TIMEOUT INVALID_IMAGE_DATA INVALID_IMAGE_URL
+TOO_MANY_IMAGES UNSUPPORTED_IMAGE BODY_TOO_LARGE INVALID_JSON CONFIG_ERROR
+""".split())
+
+
+class LotusResponseError(RuntimeError):
+    def __init__(self, code: str) -> None:
+        self.code = code if code in _LOTUS_ERROR_CODES else "LOTUS_ERROR"
+        super().__init__(self.code)
+
+
 class LotusQuestionError(ValueError):
     """Unsupported or ambiguous desktop input; never guess its structure."""
 
@@ -104,24 +125,24 @@ class LotusAnswerService:
         if not isinstance(payload, dict) or payload.get("code") != 1:
             code = str(payload.get("error") or "LOTUS_ERROR") if isinstance(payload, dict) else "LOTUS_FORMAT"
             # Never reflect upstream error text, prompts, or credentials.
-            raise RuntimeError(code)
+            raise LotusResponseError(code)
         answers = payload.get("answers")
         if not isinstance(answers, list) or not answers or not all(isinstance(x, str) and x.strip() for x in answers):
-            raise RuntimeError("LOTUS_INVALID_ANSWER")
+            raise LotusResponseError("LOTUS_INVALID_ANSWER")
         answers = [x.strip() for x in answers]
         qtype = request["type"]
         if qtype in {"single", "multiple"}:
             if qtype == "single" and len(answers) != 1:
-                raise RuntimeError("LOTUS_INVALID_ANSWER")
+                raise LotusResponseError("LOTUS_INVALID_ANSWER")
             if any(not re.fullmatch("[A-Z]", x) or ord(x)-65 >= len(request["options"]) for x in answers):
-                raise RuntimeError("LOTUS_INVALID_ANSWER")
+                raise LotusResponseError("LOTUS_INVALID_ANSWER")
             return "".join(dict.fromkeys(answers))
         if qtype == "judgement":
             if len(answers) != 1 or answers[0] not in {"正确", "错误"}:
-                raise RuntimeError("LOTUS_INVALID_ANSWER")
+                raise LotusResponseError("LOTUS_INVALID_ANSWER")
             return answers[0]
         if request.get("blankCount") and len(answers) != request["blankCount"]:
-            raise RuntimeError("LOTUS_INVALID_ANSWER")
+            raise LotusResponseError("LOTUS_INVALID_ANSWER")
         return answers  # Native desktop blank editors consume a list, not OCS JSON text.
 
     def answer(self, question: Mapping[str, Any], force_refresh: bool = False) -> Any | None:
@@ -148,6 +169,9 @@ class LotusAnswerService:
                 answer = self.parse_response(response.json(), request)
                 if question.get("type") in {"shortanswer", "calculation"}:
                     answer = answer[0]
+        except LotusResponseError as error:
+            logger.error("荷花题库请求失败：{}", error.code)
+            return None
         except httpx.HTTPStatusError as error:
             logger.error("荷花题库请求失败：HTTP {}", error.response.status_code)
             return None
