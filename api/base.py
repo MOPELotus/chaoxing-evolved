@@ -28,6 +28,7 @@ from api.answer_check import cut, check_judgement
 from api.cipher import AESCipher
 from api.config import GlobalConst as gc
 from api.cookies import save_cookies, use_cookies
+from api.runtime import get_runtime_context
 from api.decode import (
     decode_course_list,
     decode_course_point,
@@ -44,22 +45,28 @@ def get_timestamp():
 class SessionManager:
     _instance = None
     _login_lock = threading.Lock()
+    _instance_lock = threading.RLock()
 
     def __new__(cls, *args, **kwargs):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-        return cls._instance
+        with cls._instance_lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+            return cls._instance
 
     def __init__(self):
-        self._session = requests.Session()
-        self._session.mount("https://", HTTPAdapter(max_retries=10))
-        self._session.mount("http://", HTTPAdapter(max_retries=10))
-        self._session.request = functools.partial(self._session.request, timeout=5)
-        # For debug purposes
-        # self._session.verify=False
-        self._session.headers.clear()
-        self._session.headers.update(gc.HEADERS)
-        self._session.cookies.update(use_cookies())
+        with self._instance_lock:
+            context = get_runtime_context()
+            if getattr(self, "_context", None) == context:
+                return
+            session = requests.Session()
+            session.mount("https://", HTTPAdapter(max_retries=10))
+            session.mount("http://", HTTPAdapter(max_retries=10))
+            session.request = functools.partial(session.request, timeout=5)
+            session.headers.clear()
+            session.headers.update(gc.HEADERS)
+            session.cookies.update(use_cookies())
+            self._session = session
+            self._context = context
 
     @classmethod
     def get_instance(cls) -> Self:
@@ -601,6 +608,16 @@ def resolve_work_submit_url(html: str, response_url: str) -> str:
     return "https://mooc1.chaoxing.com/mooc-ans/work/addStudentWorkNew"
 
 
+def chapter_card_count(page_html: str) -> int | None:
+    document = BeautifulSoup(page_html, "lxml")
+    control = document.select_one("input#cardcount")
+    value = str(control.get("value") or "").strip() if control else ""
+    if not re.fullmatch(r"\d{1,4}", value):
+        return None
+    count = int(value)
+    return count if count <= 1000 else None
+
+
 def assemble_work_submission(form_data: Mapping) -> dict:
     """Build the browser-equivalent work form without invented answer fields."""
     payload = {key: value for key, value in form_data.items() if key != "questions"}
@@ -902,6 +919,11 @@ class Chaoxing:
         _resp.raise_for_status()
 
         logger.trace(f"原始章节列表内容:\n{_resp.text}")
+        document = BeautifulSoup(_resp.text, "lxml")
+        if "/login" in _resp.url or document.select_one('input[type="password"]'):
+            raise RuntimeError("课程章节接口返回登录页，不能判定为零章节，请重新验证登录")
+        if not document.select_one("div.chapter_unit") and "暂无章节内容" not in document.get_text():
+            raise RuntimeError("课程章节接口未返回有效目录，不能判定为零章节")
         logger.info("课程章节读取成功...")
         return decode_course_point(_resp.text)
 
@@ -922,8 +944,29 @@ class Chaoxing:
             "mooc2": 1
         }
 
-        # 学习界面任务卡片数, 很少有3个的, 但是对于章节解锁任务点少一个都不行, 可以从API /mooc-ans/mycourse/studentstudyAjax获取值, 或者干脆直接加, 但二者都会造成额外的请求
-        for _possible_num in "0123456":
+        try:
+            chapter_response = _session.get(
+                "https://mooc1.chaoxing.com/mooc-ans/mycourse/studentstudyAjax",
+                params={
+                    "courseId": course["courseId"],
+                    "clazzid": course["clazzId"],
+                    "chapterId": point["id"],
+                    "cpi": course["cpi"],
+                    "mooc2": 1,
+                },
+                timeout=25,
+            )
+            chapter_response.raise_for_status()
+        except RequestException as exc:
+            return [], {"fatal_error": f"章节任务卡目录读取失败：{type(exc).__name__}"}
+        card_count = chapter_card_count(chapter_response.text)
+        if card_count is None:
+            return [], {"fatal_error": "无法确认章节任务卡数量，停止处理以避免遗漏任务"}
+        if card_count == 0:
+            result = self.study_emptypage(course, point)
+            return [], {} if result == StudyResult.SUCCESS else {"fatal_error": "空章节访问失败"}
+
+        for _possible_num in range(card_count):
 
             logger.trace("开始读取章节所有任务点...")
 
@@ -1485,6 +1528,8 @@ class Chaoxing:
                             answer = ""
                         else:
                             answer = "".join(native_values[ord(letter) - ord("A")] for letter in answer)
+                            if q["type"] == "multiple":
+                                answer = "".join(sorted(answer))
 
                 if q["type"] in {"single", "judgement"} and answer:
                     if q["type"] == "single":

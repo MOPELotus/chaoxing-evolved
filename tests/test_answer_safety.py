@@ -146,7 +146,7 @@ class AnswerSafetyTests(unittest.TestCase):
         controls = '<ul><li><span class="num_option_dx" data="D">A.</span>alpha</li><li><span class="num_option_dx" data="A">B.</span>beta</li><li><span class="num_option_dx" data="B">C.</span>gamma</li></ul>'
         result, session = self.run_work("1", ["AC"], controls=controls)
         self.assertEqual(result, StudyResult.SUCCESS)
-        self.assertEqual(session.post.call_args.kwargs["data"]["answer71"], "DB")
+        self.assertEqual(session.post.call_args.kwargs["data"]["answer71"], "BD")
 
     def test_native_span_choice_value_is_preserved(self):
         controls = '<ul><li><span class="num_option" data="D">A.</span>alpha</li><li><span class="num_option" data="A">B.</span>beta</li></ul>'
