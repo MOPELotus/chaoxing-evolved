@@ -1088,6 +1088,8 @@ class ProfileEditorPanel(QWidget):
         self.speed_spin.setSingleStep(0.1)
         self.jobs_spin = SpinBox(self.common_card)
         self.jobs_spin.setRange(1, 1000000)
+        self.course_jobs_spin = SpinBox(self.common_card)
+        self.course_jobs_spin.setRange(1, 1000000)
         self.notopen_combo = ComboBox(self.common_card)
         for value in NOTOPEN_ACTION_OPTIONS:
             self.notopen_combo.addItem(NOTOPEN_ACTION_LABELS[value], value)
@@ -1106,7 +1108,8 @@ class ProfileEditorPanel(QWidget):
         common_grid.addWidget(make_field("账号", self.username_edit), 1, 0)
         common_grid.addWidget(make_field("密码", self.password_edit), 1, 1)
         common_grid.addWidget(make_field("倍速", self.speed_spin), 2, 0)
-        common_grid.addWidget(make_field("并发章节数", self.jobs_spin), 2, 1)
+        common_grid.addWidget(make_field("每门课并发章节数", self.jobs_spin), 2, 1)
+        common_grid.addWidget(make_field("并发课程数", self.course_jobs_spin, "总章节并发上限为课程数 × 每门课章节数；建议先试 3 门课 × 1–2 章节。"), 3, 1)
         common_grid.addWidget(make_field("关闭章节处理策略", self.notopen_combo), 3, 0)
         common_grid.addWidget(make_field("Cookies 路径", self.cookies_path_edit), 4, 0)
         common_grid.addWidget(make_field("Cache 路径", self.cache_path_edit), 4, 1)
@@ -1130,6 +1133,7 @@ class ProfileEditorPanel(QWidget):
             self.password_edit,
             self.speed_spin,
             self.jobs_spin,
+            self.course_jobs_spin,
             self.notopen_combo,
             self.cookies_path_edit,
             self.cache_path_edit,
@@ -1567,6 +1571,7 @@ class ProfileEditorPanel(QWidget):
             self.password_edit,
             self.speed_spin,
             self.jobs_spin,
+            self.course_jobs_spin,
             self.notopen_combo,
             self.cookies_path_edit,
             self.cache_path_edit,
@@ -1650,6 +1655,7 @@ class ProfileEditorPanel(QWidget):
         self.password_edit.clear()
         self.speed_spin.setValue(1.0)
         self.jobs_spin.setValue(4)
+        self.course_jobs_spin.setValue(1)
         set_notopen_action(self.notopen_combo, "retry")
         self.cookies_path_edit.clear()
         self.cache_path_edit.clear()
@@ -1742,6 +1748,7 @@ class ProfileEditorPanel(QWidget):
         self.password_edit.setText(str(common.get("password", "")))
         self.speed_spin.setValue(config_float(common.get("speed", 1.0), 1.0))
         self.jobs_spin.setValue(config_int(common.get("jobs", 4), 4))
+        self.course_jobs_spin.setValue(config_int(common.get("course_jobs", 1), 1))
         set_notopen_action(self.notopen_combo, str(common.get("notopen_action", "retry") or "retry"))
         self.cookies_path_edit.setText(str(common.get("cookies_path", "")))
         self.cache_path_edit.setText(str(common.get("cache_path", "")))
@@ -1918,6 +1925,7 @@ class ProfileEditorPanel(QWidget):
         common["course_list"] = list(self._selected_course_keys)
         common["speed"] = round(float(self.speed_spin.value()), 2)
         common["jobs"] = int(self.jobs_spin.value())
+        common["course_jobs"] = int(self.course_jobs_spin.value())
         common["notopen_action"] = get_notopen_action(self.notopen_combo)
         common["add_learning_count"] = self.add_learning_count_check.isChecked()
         common["target_count"] = int(self.target_count_spin.value())

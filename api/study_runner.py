@@ -6,6 +6,7 @@ import threading
 import time
 import traceback
 from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 from queue import PriorityQueue, ShutDown
 from threading import RLock
 from typing import Any
@@ -136,6 +137,7 @@ def _normalize_common_config(section: dict[str, Any]) -> dict[str, Any]:
         "course_list": course_list,
         "speed": float(section.get("speed", 1.0) or 1.0),
         "jobs": max(1, int(section.get("jobs", 4) or 4)),
+        "course_jobs": max(1, int(section.get("course_jobs", 1) or 1)),
         "notopen_action": str(section.get("notopen_action", "retry") or "retry").strip(),
         "challenge_retry_attempts": max(1, min(3, int(section.get("challenge_retry_attempts", 3) or 3))),
         "add_learning_count": to_bool(section.get("add_learning_count", False)),
@@ -522,14 +524,23 @@ def process_chapter(
     return ChapterResult.ERROR
 
 
+_progress_lock = RLock()
+_progress_users = 0
+_progress_formatter = None
+
+
 def process_course(chaoxing: Chaoxing, course: dict[str, Any], config: dict[str, Any]) -> None:
+    global _progress_users, _progress_formatter
     chaoxing._fatal_task_error = ""
     logger.info(f"开始学习课程: {course['title']}")
     point_list = chaoxing.get_course_point(course["courseId"], course["clazzId"], course["cpi"])
 
-    old_format_sizeof = tqdm.format_sizeof
-    tqdm.format_sizeof = format_time
-    tqdm.set_lock(RLock())
+    with _progress_lock:
+        if not _progress_users:
+            _progress_formatter = tqdm.format_sizeof
+            tqdm.format_sizeof = format_time
+            tqdm.set_lock(RLock())
+        _progress_users += 1
 
     tasks = []
     for index, point in enumerate(point_list["points"]):
@@ -550,7 +561,10 @@ def process_course(chaoxing: Chaoxing, course: dict[str, Any], config: dict[str,
             if result.is_failure():
                 raise RuntimeError(f"课程 [{course['title']}] 章节学习次数增加失败")
     finally:
-        tqdm.format_sizeof = old_format_sizeof
+        with _progress_lock:
+            _progress_users -= 1
+            if not _progress_users:
+                tqdm.format_sizeof = _progress_formatter
 
 
 def filter_courses(all_course: list[dict], course_list: list[str]) -> list[dict]:
@@ -612,13 +626,26 @@ def run_loaded_profile(profile: dict, global_settings: dict | None = None) -> No
         logger.info(f"课程列表过滤完毕, 当前课程任务数量: {len(course_task)}")
         outcomes = ["未执行"] * len(course_task)
         course_failures = []
-        for index, course in enumerate(course_task):
+        course_workers = min(common_config.get("course_jobs", 1), max(1, len(course_task)))
+        failure_lock = threading.Lock()
+        interrupted = threading.Event()
+        logger.info("并发课程数 {}，每门课并发章节数 {}", course_workers, common_config.get("jobs", 4))
+
+        def execute_course(index, course):
+            if interrupted.is_set():
+                return
             outcomes[index] = "执行中"
             try:
-                process_course(chaoxing, course, common_config)
+                course_client = chaoxing
+                if course_workers > 1:
+                    course_client = Chaoxing(account=chaoxing.account, tiku=chaoxing.tiku, **chaoxing.kwargs)
+                    for attribute in ("rate_limiter", "video_log_limiter", "_captcha_lock", "_guess_work_lock"):
+                        setattr(course_client, attribute, getattr(chaoxing, attribute))
+                process_course(course_client, course, common_config)
             except Exception as exc:
                 outcomes[index] = "执行失败"
-                course_failures.append((course, exc))
+                with failure_lock:
+                    course_failures.append((course, exc))
                 logger.error(
                     "课程 [{}]（班级 {}）执行失败：{}: {}；记录失败，继续后续课程（剩余 {} 门）",
                     course.get("title", ""), course.get("clazzId", ""), type(exc).__name__, exc,
@@ -626,9 +653,23 @@ def run_loaded_profile(profile: dict, global_settings: dict | None = None) -> No
                 )
             except BaseException:
                 outcomes[index] = "已中断"
+                interrupted.set()
                 raise
             else:
                 outcomes[index] = "执行结束"
+
+        if course_workers == 1:
+            for index, course in enumerate(course_task):
+                execute_course(index, course)
+        else:
+            executor = ThreadPoolExecutor(max_workers=course_workers, thread_name_prefix="course")
+            try:
+                futures = [executor.submit(execute_course, index, course) for index, course in enumerate(course_task)]
+                for future in futures:
+                    future.result()
+            finally:
+                interrupted.set()
+                executor.shutdown(wait=True, cancel_futures=True)
 
         logger.info("所有课程执行流程已结束，实际完成情况以平台汇总为准")
         if course_failures:
