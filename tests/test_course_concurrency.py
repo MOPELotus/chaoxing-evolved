@@ -4,10 +4,14 @@ from contextlib import ExitStack
 from unittest.mock import Mock, patch
 
 from api.base import Chaoxing
-from api.study_runner import _normalize_common_config, run_loaded_profile
+from api.study_runner import _normalize_common_config, filter_courses, run_loaded_profile
 
 
 class CourseConcurrencyTests(unittest.TestCase):
+    def test_selected_courses_follow_configured_order(self):
+        courses = [{"courseId": str(index), "clazzId": str(index), "title": str(index)} for index in range(3)]
+        self.assertEqual(filter_courses(courses, ["2::2", "0::0", "1::1"]), [courses[2], courses[0], courses[1]])
+
     def test_default_preserves_serial_courses(self):
         self.assertEqual(_normalize_common_config({})["course_jobs"], 1)
         self.assertEqual(_normalize_common_config({"course_jobs": 0})["course_jobs"], 1)

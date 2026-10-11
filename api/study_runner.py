@@ -587,6 +587,7 @@ def filter_courses(all_course: list[dict], course_list: list[str]) -> list[dict]
     if not course_task:
         raise ValueError("当前配置中的课程列表未匹配到任何有效课程，请先刷新课程列表后重新选择。")
 
+    course_task.sort(key=lambda course: next(index for index, selection in enumerate(course_list) if course_matches_selection(course, [selection])))
     return course_task
 
 
