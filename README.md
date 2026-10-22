@@ -74,9 +74,24 @@ python desktop_app.py
 
 荷花题库复用现有 OCS 服务，模型和思考强度在服务器的配置文件中调整。桌面端支持单选、多选、判断、填空，以及按单空转换的简答/计算题；保留题干、材料和选项图片的位置，填空答案按原生编辑器逐空填写。匹配、排序、完形等该接口不支持的复杂题型会明确停止，不自动切换其他来源。
 
+已对照本机 `lotus-stack/apps/ocs-ai/ocs-config.local.json` 适配 OCS 5.2.1 的最新请求和响应：
+
+- 新版 `code:1` 也可能是 `manual:true` 的人工解答。桌面端会记录 `LOTUS_MANUAL_REQUIRED` 并停止该题的自动填写、缓存和提交；不把人工解释或空数不符的答案当作成功结果。
+- 真假单选被服务端转换成 `judgement` 时，按原选项的实际顺序恢复选项字母，兼容“错误/正确”等倒序排列；其他响应题型不匹配时停止。
+- 保留题干空位、材料、选项数组、多行和图片归属；支持内联图片 data URI。题目提供 OCS 原生图片时，传递 `images`、`original_title`、`original_options`、`suggestion_title`、`suggestion_options`，由服务端按原文和占位符对齐，不猜测图片编号所属选项。
+- 升级后启用新的荷花缓存命名空间，旧缓存不再复用，避免读到此前可能缓存的人工解答。
+
+OCS 的 local JSON 是浏览器脚本的配置，包含访问令牌和页面 DOM 处理器；无需复制到桌面端或提交到仓库。桌面端继续使用自己的超星页面解析和原生表单提交。服务端的 OCS 多平台 DOM 扩展不会给桌面端增加智慧树等平台支持。服务端 HEAD/GET 在线探测仅证明可达；桌面端连接检查仍执行一题真实请求，验证令牌和答题链路。
+
 代理、请求超时和单题间隔继续使用原来的配置。客户端不会因超时重复发送同一请求，服务端负责执行和错误处理。语义缓存默认关闭，荷花与 Responses 缓存隔离；更换荷花服务端模型后建议关闭缓存或强制刷新。令牌仅保存在本机被 Git 忽略的 `desktop_state` 中，不应分享该目录。
 
 全局 JSON 对应 `defaults.tiku.answer_backend`（`responses` / `lotus`）、`lotus_url`、`lotus_token`。旧配置缺少这些字段时继续使用 Responses AI。
+
+可通过本机新版适配器源码运行 HTTP 集成回归，使用模拟模型，不读取服务凭据或消耗模型额度：
+
+```bash
+OCS_AI_SOURCE=/path/to/ocs-ai python -m unittest tests.test_lotus_ocs_integration
+```
 
 ## 数据目录
 
@@ -157,6 +172,7 @@ bash scripts/build_release_unix.sh --tag vtest --os linux --arch x64 --output-di
 
 - 上游项目以命令行刷课流程为主
 - 本分支重点维护桌面控制层、JSON 配置体系、多账号隔离、Responses AI 答题与任务完成确认
+- 已检查上游截至 `45d2106` 的更新；移植 #622 的未开放章节重试计数修复，达到上限后记为失败。#625/#626 的测验反馈与重做实现未直接合并，本分支使用默认关闭、须确认重做权限且持久记录次数的有限重做流程，避免覆盖现有答案完整性和提交检查。
 
 ## 许可与声明
 

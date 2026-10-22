@@ -23,6 +23,7 @@ _BLANK = re.compile(r"\[BLANK_\d+\]", re.IGNORECASE)
 # Only known protocol codes enter logs; upstream text can contain private data.
 _LOTUS_ERROR_CODES = frozenset("""
 LOTUS_ERROR LOTUS_FORMAT LOTUS_INVALID_ANSWER INTERNAL_ERROR
+LOTUS_MANUAL_REQUIRED LOTUS_TYPE_MISMATCH
 NO_ANSWER INVALID_ANSWER OCS_MATCH_CONFLICT REQUEST_TIMEOUT
 CODEX_AUTH CODEX_FAILED CODEX_LIMIT CODEX_MODEL CODEX_BUSY
 CODEX_OUTPUT_INVALID CODEX_OUTPUT_TOO_LARGE CODEX_START_FAILED CODEX_IPV4_FAILED
@@ -118,6 +119,25 @@ class LotusAnswerService:
                 if isinstance(count, bool) or not isinstance(count, int) or count < 1:
                     raise LotusQuestionError("填空数量必须为正整数")
                 request["blankCount"] = count
+        # OCS 5.2.1 can supply browser-fetched images. Keep its original text
+        # and placeholder mapping together; never infer ownership by position.
+        if question.get("images"):
+            images = question["images"]
+            if not isinstance(images, (list, tuple)) or not all(
+                isinstance(value, str) and value.startswith("data:image/") for value in images
+            ):
+                raise LotusQuestionError("原生图片必须为图片 data URI 数组")
+            request["images"] = list(images)
+            for field in ("original_title", "original_options", "suggestion_title", "suggestion_options"):
+                value = question.get(field)
+                if value is None:
+                    continue
+                if field == "original_options" and isinstance(value, (list, tuple)) and all(isinstance(x, str) for x in value):
+                    request[field] = list(value)
+                elif isinstance(value, str):
+                    request[field] = value
+                else:
+                    raise LotusQuestionError("原生图片映射必须保留原文和占位符文本")
         return request
 
     @staticmethod
@@ -126,11 +146,27 @@ class LotusAnswerService:
             code = str(payload.get("error") or "LOTUS_ERROR") if isinstance(payload, dict) else "LOTUS_FORMAT"
             # Never reflect upstream error text, prompts, or credentials.
             raise LotusResponseError(code)
+        # New servers also return code:1 for readable, manual-only solutions.
+        # Even a valid-looking letter must never escape into auto submission.
+        if payload.get("manual", False) is not False:
+            raise LotusResponseError("LOTUS_MANUAL_REQUIRED")
         answers = payload.get("answers")
         if not isinstance(answers, list) or not answers or not all(isinstance(x, str) and x.strip() for x in answers):
             raise LotusResponseError("LOTUS_INVALID_ANSWER")
         answers = [x.strip() for x in answers]
         qtype = request["type"]
+        response_type = payload.get("type", qtype)
+        if qtype == "single" and response_type == "judgement":
+            # OCS treats a two-option true/false single as judgement. Convert
+            # its semantic answer back to the desktop's original option index.
+            if len(answers) != 1 or answers[0] not in {"正确", "错误"}:
+                raise LotusResponseError("LOTUS_INVALID_ANSWER")
+            values = [LotusAnswerService._judgement_value(option) for option in request["options"]]
+            if len(values) != 2 or set(values) != {True, False}:
+                raise LotusResponseError("LOTUS_INVALID_ANSWER")
+            return chr(65 + values.index(answers[0] == "正确"))
+        if response_type != qtype:
+            raise LotusResponseError("LOTUS_TYPE_MISMATCH")
         if qtype in {"single", "multiple"}:
             if qtype == "single" and len(answers) != 1:
                 raise LotusResponseError("LOTUS_INVALID_ANSWER")
@@ -145,11 +181,22 @@ class LotusAnswerService:
             raise LotusResponseError("LOTUS_INVALID_ANSWER")
         return answers  # Native desktop blank editors consume a list, not OCS JSON text.
 
+    @staticmethod
+    def _judgement_value(value: str) -> bool | None:
+        # Match the server's explicit truth labels, including reversed options.
+        text = re.sub(r"^[A-Z][.．、:：)）]\s*", "", value.strip()).lower()
+        if text in {"是", "对", "正确", "确定", "√", "对的", "是的", "正确的", "true", "t", "yes", "1"}:
+            return True
+        if text in {"非", "否", "错", "错误", "×", "x", "错的", "不对", "不正确的", "不正确", "不是", "不是的", "false", "f", "no", "0"}:
+            return False
+        return None
+
     def answer(self, question: Mapping[str, Any], force_refresh: bool = False) -> Any | None:
         if not self.token or "\n" in self.token or "\r" in self.token:
             raise RuntimeError("请在全局设置填写荷花题库访问令牌")
         request = self.build_request(question)
-        cache_key = "lotus:" + question_cache_key({**request, "native_type": question.get("type")}, self.site, "server-managed", "server-managed")
+        # Invalidate answers cached before manual-only responses were rejected.
+        cache_key = "lotus:v2:" + question_cache_key({**request, "native_type": question.get("type")}, self.site, "server-managed", "server-managed")
         if self.cache is not None and self.semantic_cache_enabled and not force_refresh:
             cached = self.cache.get_cache(cache_key)
             if cached:

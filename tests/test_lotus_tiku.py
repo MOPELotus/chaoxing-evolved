@@ -5,10 +5,10 @@ from unittest.mock import Mock, patch
 import httpx
 
 from api.answer import AI
-from api.base import prepare_submission_answer
+from api.base import map_choice_answer, prepare_submission_answer
 from api.response_ai import ResponsesAnswerService
 from api.json_store import DEFAULT_GLOBAL_SETTINGS, DEFAULT_PROFILE, build_config_sections, build_effective_profile, profile_summary
-from api.lotus_tiku import LotusAnswerService, LotusQuestionError
+from api.lotus_tiku import LotusAnswerService, LotusQuestionError, LotusResponseError
 
 
 class LotusTests(unittest.TestCase):
@@ -67,6 +67,54 @@ class LotusTests(unittest.TestCase):
                 self.service().parse_response(payload, wire)
         with self.assertRaises(RuntimeError):
             self.service().parse_response({'code': 1, 'answers': ['甲']}, {'type': 'completion', 'blankCount': 2})
+
+    def test_manual_solutions_never_become_answers_or_cache_entries(self):
+        for qtype, answers in [('single', ['A']), ('completion', ['甲', '乙']), ('shortanswer', ['解释'])]:
+            cache = Mock()
+            cache.get_cache.return_value = None
+            service = self.service(semantic_cache_enabled=True)
+            service.cache = cache
+            payload = {'code': 1, 'type': 'completion' if qtype == 'shortanswer' else qtype,
+                       'manual': True, 'answers': answers, 'manualReason': 'private details'}
+            with patch('api.lotus_tiku.httpx.Client') as client, patch('api.lotus_tiku.logger') as logger:
+                client.return_value.__enter__.return_value.post.return_value = httpx.Response(
+                    200, json=payload, request=httpx.Request('POST', service.url))
+                self.assertIsNone(service.answer({'type': qtype, 'title': 'test', 'options': ['甲', '乙']}))
+                cache.add_cache.assert_not_called()
+                self.assertTrue(cache.get_cache.call_args.args[0].startswith('lotus:v2:'))
+                logger.error.assert_called_once_with('荷花题库请求失败：{}', 'LOTUS_MANUAL_REQUIRED')
+
+    def test_server_judgement_conversion_keeps_original_single_option_order(self):
+        for options, answer, expected in [(['错误', '正确'], '正确', 'B'),
+                                          (['True', 'False'], '错误', 'B'),
+                                          (['A. 否', 'B. 是'], '错误', 'A')]:
+            question = {'type': 'single', 'options': options}
+            result = self.service().parse_response({'code': 1, 'type': 'judgement', 'answers': [answer]}, question)
+            self.assertEqual(result, expected)
+            self.assertEqual(map_choice_answer(result, options), expected)
+        for options in (['甲', '乙'], ['正确', '正确'], ['错误', '正确', '是']):
+            with self.assertRaises(LotusResponseError):
+                self.service().parse_response({'code': 1, 'type': 'judgement', 'answers': ['正确']},
+                                               {'type': 'single', 'options': options})
+        with self.assertRaises(LotusResponseError):
+            self.service().parse_response({'code': 1, 'type': 'unknown', 'answers': ['A']},
+                                           {'type': 'single', 'options': ['甲', '乙']})
+
+    def test_native_image_mapping_and_inline_images_are_preserved(self):
+        data = 'data:image/png;base64,aGVsbG8='
+        native = {'images': [data], 'original_title': '图 https://cdn.example/private',
+                  'original_options': ['甲', '乙'], 'suggestion_title': '图 [图片1]',
+                  'suggestion_options': '甲\n乙'}
+        request = self.service().build_request({'type': 'single', 'title': '图____ https://cdn.example/private',
+                                                'options': ['甲', '乙'], **native})
+        for field, value in native.items():
+            self.assertEqual(request[field], value)
+        self.assertIn('____', request['title'])
+        inline = self.service().build_request({'type': 'completion', 'title': f'[QUESTION_IMAGE:{data}]', 'blank_count': 1})
+        self.assertEqual(inline['title'], f'<img src="{data}">')
+        for invalid in ({'images': ['https://cdn.example/a']}, {'images': [data], 'suggestion_title': 1}):
+            with self.assertRaises(LotusQuestionError):
+                self.service().build_request({'type': 'single', 'title': 'test', **invalid})
 
     def test_timeout_and_http_failures_do_not_duplicate_requests(self):
         for failure in (httpx.ReadTimeout('timeout'), httpx.Response(401, request=httpx.Request('POST', 'https://lotus.example/search')),
