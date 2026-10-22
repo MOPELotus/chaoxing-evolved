@@ -364,11 +364,13 @@ class JobProcessor:
                         self.task_queue.task_done()
                         continue
 
+                    task.tries += 1
                     if task.tries >= self.normal_max_tries:
                         logger.error(
                             "章节未开启: {} 可能由于上一章节的章节检测未完成，也可能由于章节已关闭，请手动检查后再试。",
                             task.point["title"],
                         )
+                        self.failed_tasks.append(task)
                         self.task_queue.task_done()
                         continue
 
