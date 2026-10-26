@@ -162,7 +162,13 @@ class LotusTests(unittest.TestCase):
 
     def test_error_log_preserves_known_code_without_upstream_text(self):
         question = {'type': 'single', 'title': 'Choose', 'options': ['A', 'B']}
-        for code, logged in [('NO_ANSWER', 'NO_ANSWER'), ('INVALID_ANSWER', 'INVALID_ANSWER'), ('private-token-value', 'LOTUS_ERROR')]:
+        for code, logged in [
+            ('NO_ANSWER', 'NO_ANSWER'),
+            ('INVALID_ANSWER', 'INVALID_ANSWER'),
+            ('CODEX_NETWORK', 'CODEX_NETWORK'),
+            ('CODEX_NO_PROGRESS', 'CODEX_NO_PROGRESS'),
+            ('private-token-value', 'LOTUS_ERROR'),
+        ]:
             with patch('api.lotus_tiku.httpx.Client') as client, patch('api.lotus_tiku.logger') as logger:
                 client.return_value.__enter__.return_value.post.return_value = httpx.Response(200, json={'code': 0, 'error': code, 'message': 'private upstream details'}, request=httpx.Request('POST', self.service().url))
                 self.assertIsNone(self.service().answer(question))
