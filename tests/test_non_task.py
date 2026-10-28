@@ -36,6 +36,25 @@ class NonTaskTests(unittest.TestCase):
         self.assertEqual(jobs[0]['jobid'], 'work-source')
         self.assertIs(jobs[0]['non_task'], True)
 
+    def test_native_jobid_without_job_flag_still_identifies_required_work(self):
+        page = self.page([{'type': 'workid', 'jobid': 'work-required', 'mid': 'work-mid', 'property': {'module': 'work', 'jobid': 'work-required', '_jobid': 'work-required'}}])
+        jobs, info = decode_course_card(page, include_non_task=True)
+        self.assertEqual(jobs[0]['jobid'], 'work-required')
+        self.assertNotIn('non_task', jobs[0])
+
+    def test_completed_chapter_does_not_rerun_required_work(self):
+        client = Chaoxing()
+        client.rate_limiter = Mock()
+        client.study_emptypage = Mock()
+        session = Mock()
+        session.get.side_effect = [Mock(status_code=200, text='<input id="cardcount" value="1">'), Mock(status_code=200, text=self.page([
+            {'type': 'workid', 'jobid': 'work-required', 'property': {'module': 'work', 'jobid': 'work-required'}},
+            {'type': 'workid', 'property': {'module': 'work', '_jobid': 'work-optional'}},
+        ]))]
+        with patch.object(SessionManager, 'get_session', return_value=session), patch.object(client, '_is_captcha_response', return_value=False):
+            jobs, info = client.get_job_list({'courseId': 'course', 'clazzId': 'class', 'cpi': 'member'}, {'id': 'point', 'has_finished': True}, include_non_task=True)
+        self.assertEqual([job['jobid'] for job in jobs], ['work-optional'])
+
     def test_passed_media_skipped_and_unpassed_non_task_discovered(self):
         cards = [
             {'type': 'video', 'mid': 'passed', 'isPassed': True, 'property': {'module': 'insertvideo'}},

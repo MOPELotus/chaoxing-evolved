@@ -263,7 +263,8 @@ def _process_attachment_cards(cards: List[Dict[str, Any]], include_non_task: boo
     job_list = []
 
     for index, card in enumerate(cards):
-        non_task = not card.get("job")
+        properties = card.get("property", {})
+        non_task = not (card.get("job") or card.get("jobid") or properties.get("jobid"))
         start_index = len(job_list)
         # 跳过已通过的任务
         if card.get("isPassed", False):

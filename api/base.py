@@ -1014,6 +1014,8 @@ class Chaoxing:
 
             if include_non_task:
                 _job_list, _job_info = decode_course_card(_resp.text, include_non_task=True)
+                if point.get("has_finished"):
+                    _job_list = [job for job in _job_list if job.get("non_task")]
             else:
                 _job_list, _job_info = decode_course_card(_resp.text)
             if _job_info.get("notOpen", False):
