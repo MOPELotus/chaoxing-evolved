@@ -1347,7 +1347,7 @@ class Chaoxing:
         _session = SessionManager.get_session()
         if _job.get("non_task"):
             response = _session.get(
-                "https://mooc1.chaoxing.com/ananas/modules/document/index.html",
+                "https://mooc1.chaoxing.com/ananas/modules/pdf/index.html",
                 params={"objectid": _job["objectid"], "mid": _job["mid"], "courseid": _course["courseId"], "clazzid": _course["clazzId"]},
             )
             if response.status_code != 200 or self._is_captcha_response(response) or "/login" in response.url:

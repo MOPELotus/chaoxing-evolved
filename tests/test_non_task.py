@@ -1,8 +1,9 @@
 import json
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from api.decode import decode_course_card
+from api.base import Chaoxing, SessionManager, StudyResult
 from api.json_store import DEFAULT_PROFILE
 from api.study_runner import ChapterResult, _normalize_common_config, process_chapter
 
@@ -51,6 +52,15 @@ class NonTaskTests(unittest.TestCase):
         jobs, info = decode_course_card(page, include_non_task=True)
         self.assertEqual(jobs, [])
         self.assertEqual(info['unsupported_non_task'], [{'module': 'insertbbs', 'title': 'Discussion'}])
+
+    def test_non_task_document_previews_without_claiming_completion(self):
+        client = Chaoxing()
+        session = Mock()
+        session.get.return_value = Mock(status_code=200, text='preview', url='https://mooc1.chaoxing.com/ananas/modules/pdf/index.html')
+        with patch.object(SessionManager, 'get_session', return_value=session), patch.object(client, '_is_captcha_response', return_value=False):
+            result = client.study_document({'courseId': 'course', 'clazzId': 'class'}, {'non_task': True, 'objectid': 'object', 'mid': 'mid'})
+        self.assertEqual(result, StudyResult.SKIPPED)
+        self.assertEqual(session.get.call_args.args[0], 'https://mooc1.chaoxing.com/ananas/modules/pdf/index.html')
 
 
 if __name__ == '__main__':
