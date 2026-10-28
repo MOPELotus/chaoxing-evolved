@@ -1098,6 +1098,7 @@ class ProfileEditorPanel(QWidget):
         self.cache_path_edit = LineEdit(self.common_card)
         self.cache_path_edit.setPlaceholderText("留空时自动使用当前配置的独立缓存文件")
         self.add_learning_count_check = CheckBox("刷课后增加章节学习次数", self.common_card)
+        self.add_learning_count_check.setToolTip("所有所选课程的任务流程结束后，统一运行学习次数阶段；不重新执行答题和视频。")
         self.include_non_task_check = CheckBox("非任务点运行", self.common_card)
         self.include_non_task_check.setToolTip("运行任务点的同时，检查所有知识点（包括已完成知识点）内的非任务点视频、音频、文档和测验；讨论、图书和图片列为待人工，不计为完成。")
         self.target_count_spin = SpinBox(self.common_card)
@@ -1121,7 +1122,7 @@ class ProfileEditorPanel(QWidget):
             make_field(
                 "阅读计时（秒）",
                 self.reading_duration_spin,
-                "每 5 秒模拟阅读页滚动并上报进度；0 表示关闭，平台可能次日统计。",
+                "阅读计时在全部课程任务和学习次数阶段之后独立运行，失败不改变课程任务结果；0 表示关闭，平台可能次日统计。",
             ),
             6,
             0,

@@ -348,6 +348,7 @@ class JobProcessor:
                 challenge_attempt=task.tries,
                 abort_event=self.abort_event,
                 include_non_task=self.config.get("include_non_task", False),
+                deferred_readings=self.course.setdefault("_reading_targets", {}),
             )
 
             if self.abort_event.is_set() and task.result != ChapterResult.FATAL:
@@ -447,6 +448,7 @@ def process_chapter(
     challenge_attempt: int = 0,
     abort_event: threading.Event | None = None,
     include_non_task: bool = False,
+    deferred_readings: dict[str, dict[str, Any]] | None = None,
 ) -> ChapterResult:
     logger.info(f'当前章节: {point["title"]}')
     if abort_event is not None and abort_event.is_set():
@@ -489,10 +491,13 @@ def process_chapter(
             job,
             job_info,
             speed,
-            reading_duration_seconds,
+            0 if deferred_readings is not None else reading_duration_seconds,
             challenge_attempt,
         )
         job_results.append(result)
+        if job["type"] == "read" and result.is_success() and reading_duration_seconds > 0 and deferred_readings is not None:
+            deferred_readings[str(job_info["knowledgeid"])] = dict(job_info)
+            logger.info("[阅读计时待执行] {} | {} 秒，移至独立阶段", point["title"], reading_duration_seconds)
         if job.get("non_task"):
             identity = (str(point["id"]), job["type"], str(job.get("mid") or job.get("jobid")))
             course.setdefault("_non_task_results", {})[identity] = result
@@ -548,6 +553,7 @@ _progress_formatter = None
 def process_course(chaoxing: Chaoxing, course: dict[str, Any], config: dict[str, Any]) -> None:
     global _progress_users, _progress_formatter
     chaoxing._fatal_task_error = ""
+    course["_reading_targets"] = {}
     if config.get("include_non_task", False):
         course["_non_task_pending"] = {}
         course["_non_task_results"] = {}
@@ -573,12 +579,6 @@ def process_course(chaoxing: Chaoxing, course: dict[str, Any], config: dict[str,
         if processor.failed_tasks:
             failed_titles = ", ".join(task.point.get("title", "") for task in processor.failed_tasks)
             raise RuntimeError(f"课程 [{course['title']}] 存在未完成章节: {failed_titles}")
-        if to_bool(config.get("add_learning_count", False)):
-            target_count = max(0, int(config.get("target_count", 100) or 0))
-            logger.info(f"开始增加课程章节学习次数，本次计划: {target_count}")
-            result = chaoxing.increase_chapter_learning_count(course, point_list["points"], target_count)
-            if result.is_failure():
-                raise RuntimeError(f"课程 [{course['title']}] 章节学习次数增加失败")
     finally:
         if config.get("include_non_task", False):
             results = list(course.get("_non_task_results", {}).values())
@@ -631,11 +631,78 @@ def format_time(num, suffix="", divisor=""):
     return f"{mins:02d}:{sec:02d}"
 
 
+def run_course_batch(courses: list[dict], workers: int, execute, interrupted: threading.Event) -> None:
+    if workers == 1:
+        for index, course in enumerate(courses):
+            execute(index, course)
+        return
+    executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="course")
+    try:
+        futures = [executor.submit(execute, index, course) for index, course in enumerate(courses)]
+        for future in futures:
+            future.result()
+    finally:
+        interrupted.set()
+        executor.shutdown(wait=True, cancel_futures=True)
+
+
+def run_followup_phases(chaoxing: Chaoxing, courses: list[dict], config: dict, workers: int) -> None:
+    duration = config.get("reading_duration_seconds", 0)
+    phases = []
+    if to_bool(config.get("add_learning_count", False)):
+        phases.append("学习次数")
+    if duration > 0:
+        phases.append("阅读计时")
+    for phase in phases:
+        interrupted = threading.Event()
+        results = ["未执行"] * len(courses)
+        logger.info("========== 独立{}阶段：全部课程任务流程已结束，不重新执行答题/视频 ==========" , phase)
+
+        def execute(index, course):
+            if interrupted.is_set():
+                return
+            try:
+                if phase == "学习次数":
+                    points = chaoxing.get_course_point(course["courseId"], course["clazzId"], course["cpi"])["points"]
+                    target = max(0, int(config.get("target_count", 100) or 0))
+                    if target > 0 and not points:
+                        raise RuntimeError("未获取到知识点，不能执行学习次数")
+                    logger.info("[学习次数] {} | 本次计划增加 {} 次", course["title"], target)
+                    result = chaoxing.increase_chapter_learning_count(course, points, target)
+                    if result.is_failure():
+                        raise RuntimeError("学习次数执行失败")
+                else:
+                    targets = list(course.get("_reading_targets", {}).values())
+                    if not targets:
+                        results[index] = "无待执行计时"
+                        return
+                    for position, info in enumerate(targets):
+                        logger.info("[独立阅读计时] {} | {}/{} | {} 秒", course["title"], position + 1, len(targets), duration)
+                        result = chaoxing.study_read_duration(course, info, duration)
+                        if result.is_failure():
+                            raise RuntimeError("阅读计时执行失败")
+                results[index] = "执行成功"
+            except Exception as exc:
+                results[index] = "执行失败"
+                logger.warning("[{}报告] {} | {}: {}；不改变课程任务执行结果，继续其他课程", phase, course["title"], type(exc).__name__, exc)
+            except BaseException:
+                results[index] = "已中断"
+                interrupted.set()
+                raise
+            finally:
+                course["_count_outcome" if phase == "学习次数" else "_reading_outcome"] = results[index]
+
+        run_course_batch(courses, workers, execute, interrupted)
+        for course, result in zip(courses, results):
+            logger.info("[{}报告] {} | {}（独立于课程知识点完成率）", phase, course["title"], result)
+
+
 def run_loaded_profile(profile: dict, global_settings: dict | None = None) -> None:
     started_at = time.monotonic()
     course_task = []
     outcomes = []
     chaoxing = None
+    task_report_generated = False
     try:
         common_config, tiku_config, _notification_config, effective_profile = build_runner_config(profile, global_settings)
 
@@ -688,20 +755,16 @@ def run_loaded_profile(profile: dict, global_settings: dict | None = None) -> No
             else:
                 outcomes[index] = "执行结束"
 
-        if course_workers == 1:
-            for index, course in enumerate(course_task):
-                execute_course(index, course)
-        else:
-            executor = ThreadPoolExecutor(max_workers=course_workers, thread_name_prefix="course")
-            try:
-                futures = [executor.submit(execute_course, index, course) for index, course in enumerate(course_task)]
-                for future in futures:
-                    future.result()
-            finally:
-                interrupted.set()
-                executor.shutdown(wait=True, cancel_futures=True)
+        logger.info("========== 课程任务阶段 ==========")
+        run_course_batch(course_task, course_workers, execute_course, interrupted)
 
         logger.info("所有课程执行流程已结束，实际完成情况以平台汇总为准")
+        try:
+            log_course_report(chaoxing, course_task, outcomes, time.monotonic() - started_at)
+            task_report_generated = True
+        except Exception as exc:
+            logger.warning("课程报告生成失败：{}", type(exc).__name__)
+        run_followup_phases(chaoxing, course_task, common_config, course_workers)
         if course_failures:
             failed_courses = "、".join(
                 f"{course.get('title', '')}（班级 {course.get('clazzId', '')}）"
@@ -717,7 +780,7 @@ def run_loaded_profile(profile: dict, global_settings: dict | None = None) -> No
         logger.error(f"错误: {type(exc).__name__}: {exc}")
         raise
     finally:
-        if chaoxing is not None and course_task:
+        if chaoxing is not None and course_task and not task_report_generated:
             try:
                 log_course_report(chaoxing, course_task, outcomes, time.monotonic() - started_at)
             except Exception as exc:
