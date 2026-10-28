@@ -576,6 +576,18 @@ def prepare_submission_answer(value, question: dict) -> tuple[str, dict[str, str
     q_type = str(question.get("type") or "")
     if q_type == "matching":
         return matching_submission_answer(value, question), {}
+    if q_type == "ordering":
+        domain = question.get("option_values") or []
+        value = _answer_json_value(value)
+        if isinstance(value, str):
+            sequence = list(re.sub(r"[\s,，、;；>→\-]+", "", value.strip().upper()))
+        elif isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value):
+            sequence = [item.strip().upper() for item in value]
+        else:
+            return "", {}
+        if not domain or len(domain) != len(sequence) or len(set(sequence)) != len(sequence) or set(domain) != set(sequence):
+            return "", {}
+        return "".join(sequence), {}
     if q_type in {"completion", "shortanswer", "calculation"}:
         fields = [str(item) for item in question.get("answer_fields") or []]
         if fields:

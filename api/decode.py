@@ -586,7 +586,7 @@ def _process_question(div_tag, font_decoder=None) -> Dict[str, Any]:
         return (int(match.group(1)) if match else 0, name)
 
     answer_fields.sort(key=answer_field_order)
-    blank_count = max(blank_count, len(answer_fields))
+    blank_count = len(answer_fields) if answer_fields else blank_count
     q_options = []
     for li in options_list:
         if getattr(li, "name", "") in {"textarea", "input"}:
@@ -610,6 +610,12 @@ def _process_question(div_tag, font_decoder=None) -> Dict[str, Any]:
         q_options.extend(f"右{i + 1}: {item}" for i, item in enumerate(matching_groups["right"]))
     option_items = list(q_options)
     option_values = []
+    if q_type == "ordering":
+        controls = div_tag.select(".sortQuesSelect select")
+        if controls:
+            domains = [[str(option.get("value")) for option in control.select("option[value]") if option.get("value") not in {"", "-"}] for control in controls]
+            if all(domain == domains[0] for domain in domains) and len(controls) == len(domains[0]):
+                option_values = domains[0]
     if q_type in {"single", "multiple"}:
         for option_node in options_list:
             control = option_node.select_one("input[type='radio'][value], input[type='checkbox'][value]")
@@ -774,6 +780,8 @@ def _rich_node_text(node, font_decoder=None) -> tuple[str, int, int]:
         if underlined(element):
             meaningful = ' '.join(rendered.split())
             if not meaningful:
+                if element.find('br'):
+                    return '\n'
                 return marker()
             underline_count += 1
             return f' [UNDERLINE]{meaningful}[/UNDERLINE] '
@@ -782,6 +790,9 @@ def _rich_node_text(node, font_decoder=None) -> tuple[str, int, int]:
     value = render(node)
     value = re.sub(r'[ \t\r\f\v]+', ' ', value)
     value = re.sub(r' *\n *', '\n', value)
+    value = re.sub(r'\[BLANK_\d+\]\s*([（(]\d+[)）])\s*\[BLANK_\d+\]', r'\1 [BLANK_0]', value)
+    blank_index = 0
+    value = re.sub(r'\[BLANK_\d+\]', lambda match: marker().strip(), value)
     return value.strip(), blank_index, underline_count
 
 

@@ -59,6 +59,23 @@ class RichTextDecodeTests(unittest.TestCase):
         self.assertEqual(question["blank_count"], 3)
         self.assertEqual(question["option_items"], [])
 
+    def test_decorative_underlined_line_break_is_not_a_blank(self):
+        node = BeautifulSoup('<div><u><br></u>A (&nbsp;&nbsp;)<u><br></u></div>', 'html.parser').div
+        text, count, underlines = _rich_node_text(node)
+        self.assertEqual(count, 1)
+        self.assertIn('([BLANK_1])', text)
+
+    def test_numbered_blank_with_two_underlined_sides_is_one_field(self):
+        node = BeautifulSoup('<div>A <u>&nbsp;&nbsp;</u><span>(1)</span><u>&nbsp;&nbsp;</u> B <u>&nbsp;&nbsp;</u>(2)<u>&nbsp;&nbsp;</u></div>', 'html.parser').div
+        text, count, underlines = _rich_node_text(node)
+        self.assertEqual(count, 2)
+        self.assertIn('(1) [BLANK_1]', text)
+        self.assertIn('(2) [BLANK_2]', text)
+
+    def test_native_editor_count_overrides_visual_blank_count(self):
+        page = '<form><div class="singleQuesId" data="123"><div class="TiMu" data="2"><div class="Zy_TItle">Put __ to __</div><textarea name="answerEditor1231"></textarea></div></div></form>'
+        self.assertEqual(decode_questions_info(page)['questions'][0]['blank_count'], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
