@@ -81,6 +81,22 @@ class NonTaskTests(unittest.TestCase):
         self.assertEqual(result, StudyResult.SKIPPED)
         self.assertEqual(session.get.call_args.args[0], 'https://mooc1.chaoxing.com/ananas/modules/pdf/index.html')
 
+    def test_completed_review_page_does_not_query_or_submit_again(self):
+        client = Chaoxing()
+        client.tiku = Mock(DISABLE=False)
+        session = Mock()
+        session.get.return_value = Mock(status_code=200, text='<title>查看已批阅作业</title><span class="testTit_status">已完成</span><form></form>')
+        with patch.object(SessionManager, 'get_session', return_value=session):
+            result = client._study_work_once(
+                {'courseId': 'course', 'clazzId': 'class'},
+                {'jobid': 'work-source', 'enc': 'test-enc', 'non_task': True},
+                {'knowledgeid': 'point', 'ktoken': 'test-token', 'cpi': 'member'},
+            )
+        self.assertEqual(result, StudyResult.SUCCESS)
+        self.assertEqual(session.get.call_count, 1)
+        client.tiku.query_all.assert_not_called()
+        session.post.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

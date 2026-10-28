@@ -1459,6 +1459,9 @@ class Chaoxing:
             if is_expired_task_text(_resp.text):
                 raise ExpiredHomeworkError("章节检测任务已过期")
 
+            if _resp.status_code == 200 and work_feedback(_resp.text) == "complete":
+                return _resp, {"already_completed": True}
+
             questions = decode_questions_info(_resp.text)
 
             if _resp.status_code == 200 and questions.get("questions"):
@@ -1482,6 +1485,12 @@ class Chaoxing:
         except Exception as e:
             logger.error(f"获取章节检测题目失败, 达到最大重试次数: {e}")
             return StudyResult.ERROR
+
+        if questions.get("already_completed"):
+            logger.info("章节测验已由平台确认完成，跳过重复作答: {}", _job.get("title") or _job.get("jobid", ""))
+            if guess_state is not None:
+                guess_state["feedback"] = "complete"
+            return StudyResult.SUCCESS
 
         _ORIGIN_HTML_CONTENT = final_resp.text  # 用于配合输出网页源码, 帮助修复#391错误
 
