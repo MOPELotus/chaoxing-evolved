@@ -168,7 +168,7 @@ def _extract_points_from_chapter(chapter_unit) -> List[Dict[str, Any]]:
     return point_list
 
 
-def decode_course_card(html_text: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def decode_course_card(html_text: str, include_non_task: bool = False) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
     解析任务点列表页面，提取任务点信息
     
@@ -200,7 +200,26 @@ def decode_course_card(html_text: str) -> Tuple[List[Dict[str, Any]], Dict[str, 
 
     # 处理所有附件任务
     cards = cards_data.get("attachments", [])
-    job_list = _process_attachment_cards(cards)
+    job_list = _process_attachment_cards(cards, include_non_task=include_non_task)
+    if include_non_task:
+        pending = {}
+        for frame in BeautifulSoup(html_text, "lxml").select("iframe[module][data]"):
+            module = frame.get("module", "")
+            if module in {"insertvideo", "insertaudio", "insertdoc", "work"}:
+                continue
+            try:
+                properties = json.loads(frame.get("data") or "{}")
+            except (ValueError, TypeError):
+                properties = {}
+            title = properties.get("title") or properties.get("bookname") or properties.get("name") or module
+            pending[(module, properties.get("mid") or str(title))] = {"module": module, "title": str(title)}
+        for card in cards:
+            properties = card.get("property", {})
+            module = properties.get("module", card.get("type", "unknown"))
+            if not card.get("job") and module not in {"insertvideo", "insertaudio", "insertdoc", "work"}:
+                title = properties.get("title") or properties.get("bookname") or properties.get("name") or module
+                pending[(module, properties.get("mid") or str(title))] = {"module": module, "title": str(title)}
+        job_info["unsupported_non_task"] = list(pending.values())
 
     return job_list, job_info
 
@@ -231,7 +250,7 @@ def _extract_job_info(cards_data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _process_attachment_cards(cards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _process_attachment_cards(cards: List[Dict[str, Any]], include_non_task: bool = False) -> List[Dict[str, Any]]:
     """
     处理所有附件任务卡片，强化直播任务识别逻辑
     
@@ -244,17 +263,27 @@ def _process_attachment_cards(cards: List[Dict[str, Any]]) -> List[Dict[str, Any
     job_list = []
 
     for index, card in enumerate(cards):
+        non_task = not card.get("job")
+        start_index = len(job_list)
         # 跳过已通过的任务
         if card.get("isPassed", False):
             continue
 
         # 处理无job字段的特殊任务
-        if card.get("job") is None:
+        if card.get("job") is None and not include_non_task:
             # 尝试识别阅读任务
             read_job = _process_read_task(card)
             if read_job:
                 job_list.append(read_job)
             continue
+
+        if include_non_task and non_task:
+            properties = card.get("property", {})
+            if properties.get("module") not in {"insertvideo", "insertaudio", "insertdoc", "work"}:
+                continue
+            card = dict(card)
+            if card.get("type") in {"document", "workid"}:
+                card["jobid"] = card.get("jobid") or properties.get("_jobid", "")
 
         # 一开始就把超星api的屎山处理掉，不要用一个屎山行为掩盖另一个屎山 (指根据otherInfo中是否有courseId决定url拼接方式😂)
         # 清理otherInfo字段中的无效参数，这里优化了一下(保留了作者原来的注释TAT）
@@ -305,6 +334,10 @@ def _process_attachment_cards(cards: List[Dict[str, Any]]) -> List[Dict[str, Any
         else:
             if card.get("job") is not False:
                 logger.warning("Unknown card type: {}", card_type)
+
+        if include_non_task and non_task:
+            for job in job_list[start_index:]:
+                job["non_task"] = True
 
     return job_list
 

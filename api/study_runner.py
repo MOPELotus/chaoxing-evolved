@@ -138,6 +138,7 @@ def _normalize_common_config(section: dict[str, Any]) -> dict[str, Any]:
         "speed": float(section.get("speed", 1.0) or 1.0),
         "jobs": max(1, int(section.get("jobs", 4) or 4)),
         "course_jobs": max(1, int(section.get("course_jobs", 1) or 1)),
+        "include_non_task": to_bool(section.get("include_non_task", False)),
         "notopen_action": str(section.get("notopen_action", "retry") or "retry").strip(),
         "challenge_retry_attempts": max(1, min(3, int(section.get("challenge_retry_attempts", 3) or 3))),
         "add_learning_count": to_bool(section.get("add_learning_count", False)),
@@ -346,6 +347,7 @@ class JobProcessor:
                 reading_duration_seconds=self.config.get("reading_duration_seconds", 0),
                 challenge_attempt=task.tries,
                 abort_event=self.abort_event,
+                include_non_task=self.config.get("include_non_task", False),
             )
 
             if self.abort_event.is_set() and task.result != ChapterResult.FATAL:
@@ -444,6 +446,7 @@ def process_chapter(
     reading_duration_seconds: int = 0,
     challenge_attempt: int = 0,
     abort_event: threading.Event | None = None,
+    include_non_task: bool = False,
 ) -> ChapterResult:
     logger.info(f'当前章节: {point["title"]}')
     if abort_event is not None and abort_event.is_set():
@@ -451,14 +454,21 @@ def process_chapter(
     if is_expired_task_text(point.get("title")) or is_expired_task_text(point.get("status")):
         logger.warning("章节任务已过期，按完成处理: {}", point.get("title", ""))
         return ChapterResult.SUCCESS
-    if point["has_finished"]:
+    if point["has_finished"] and not include_non_task:
         logger.info(f'章节：{point["title"]} 已完成所有任务点')
         return ChapterResult.SUCCESS
 
     chaoxing.rate_limiter.limit_rate(random_time=True, random_min=0, random_max=0.2)
     if abort_event is not None and abort_event.is_set():
         return ChapterResult.ERROR
-    jobs, job_info = chaoxing.get_job_list(course, point)
+    if include_non_task:
+        jobs, job_info = chaoxing.get_job_list(course, point, include_non_task=True)
+        logger.info("[非任务点补跑] {} | 可处理 {} | 待人工 {}", point["title"], len(jobs), len(job_info.get("unsupported_non_task", [])))
+        for pending in job_info.get("unsupported_non_task", []):
+            logger.warning("[非任务点待人工] {} | {} | {}", point["title"], pending["module"], pending["title"])
+            course.setdefault("_non_task_pending", {})[(str(point["id"]), pending["module"], pending["title"])] = pending
+    else:
+        jobs, job_info = chaoxing.get_job_list(course, point)
 
     if job_info.get("fatal_error"):
         point["_fatal_error"] = str(job_info["fatal_error"])
@@ -483,6 +493,10 @@ def process_chapter(
             challenge_attempt,
         )
         job_results.append(result)
+        if job.get("non_task"):
+            identity = (str(point["id"]), job["type"], str(job.get("mid") or job.get("jobid")))
+            course.setdefault("_non_task_results", {})[identity] = result
+            logger.info("[非任务点处理结果] {} | {} | {}", point["title"], job["type"], result.name)
         if result.is_failure():
             return ChapterResult.ERROR
 
@@ -534,6 +548,9 @@ _progress_formatter = None
 def process_course(chaoxing: Chaoxing, course: dict[str, Any], config: dict[str, Any]) -> None:
     global _progress_users, _progress_formatter
     chaoxing._fatal_task_error = ""
+    if config.get("include_non_task", False):
+        course["_non_task_pending"] = {}
+        course["_non_task_results"] = {}
     logger.info(f"开始学习课程: {course['title']}")
     point_list = chaoxing.get_course_point(course["courseId"], course["clazzId"], course["cpi"])
 
@@ -563,6 +580,16 @@ def process_course(chaoxing: Chaoxing, course: dict[str, Any], config: dict[str,
             if result.is_failure():
                 raise RuntimeError(f"课程 [{course['title']}] 章节学习次数增加失败")
     finally:
+        if config.get("include_non_task", False):
+            results = list(course.get("_non_task_results", {}).values())
+            logger.info(
+                "[非任务点报告] {} | 处理成功 {} | 跳过/仅预览 {} | 处理失败 {} | 不支持、待人工 {}（不代表平台知识点完成率）",
+                course["title"],
+                sum(result == StudyResult.SUCCESS for result in results),
+                sum(result == StudyResult.SKIPPED for result in results),
+                sum(result.is_failure() for result in results),
+                len(course.get("_non_task_pending", {})),
+            )
         with _progress_lock:
             _progress_users -= 1
             if not _progress_users:

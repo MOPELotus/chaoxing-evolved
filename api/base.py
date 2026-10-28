@@ -927,7 +927,7 @@ class Chaoxing:
         logger.info("课程章节读取成功...")
         return decode_course_point(_resp.text)
 
-    def get_job_list(self, course: dict, point: dict) -> tuple[list[dict], dict]:
+    def get_job_list(self, course: dict, point: dict, include_non_task: bool = False) -> tuple[list[dict], dict]:
         if self._fatal_task_error:
             return [], {"fatal_error": self._fatal_task_error}
         _session = SessionManager.get_session()
@@ -1012,14 +1012,20 @@ class Chaoxing:
                     self._fatal_task_error = reason
                     return [], {"fatal_error": reason, "captcha_required": captcha_blocked}
 
-            _job_list, _job_info = decode_course_card(_resp.text)
+            if include_non_task:
+                _job_list, _job_info = decode_course_card(_resp.text, include_non_task=True)
+            else:
+                _job_list, _job_info = decode_course_card(_resp.text)
             if _job_info.get("notOpen", False):
                 # 直接返回, 节省一次请求
                 logger.info("该章节未开放")
                 return [], _job_info
 
             job_list += _job_list
+            pending = job_info.get("unsupported_non_task", []) + _job_info.pop("unsupported_non_task", [])
             job_info.update(_job_info)
+            if include_non_task:
+                job_info["unsupported_non_task"] = pending
 
         if not job_list:
             self.study_emptypage(course, point)
@@ -1277,6 +1283,10 @@ class Chaoxing:
                     elif not passed and state != 200:
                         return StudyResult.ERROR
 
+                    if _job.get("non_task") and state == 200 and play_time >= duration:
+                        logger.info("[非任务点] 媒体已播放到结尾并上报进度，不依赖任务点通过标记: {}", _job["name"])
+                        return StudyResult.SUCCESS
+
                     wait_time = int(random.uniform(30, 90))
                     last_log_time = play_time
 
@@ -1335,6 +1345,15 @@ class Chaoxing:
             - re module for regular expression matching
         """
         _session = SessionManager.get_session()
+        if _job.get("non_task"):
+            response = _session.get(
+                "https://mooc1.chaoxing.com/ananas/modules/document/index.html",
+                params={"objectid": _job["objectid"], "mid": _job["mid"], "courseid": _course["courseId"], "clazzid": _course["clazzId"]},
+            )
+            if response.status_code != 200 or self._is_captcha_response(response) or "/login" in response.url:
+                return StudyResult.ERROR
+            logger.info("[非任务点] 已打开文档预览（不等于完成阅读）: {}", _job["objectid"])
+            return StudyResult.SKIPPED
         _url = f"https://mooc1.chaoxing.com/ananas/job/document?jobid={_job['jobid']}&knowledgeid={re.findall(r'nodeId_(.*?)-', _job['otherinfo'])[0]}&courseid={_course['courseId']}&clazzid={_course['clazzId']}&jtoken={_job['jtoken']}&_dc={get_timestamp()}"
         _resp = _session.get(_url)
         if _resp.status_code != 200:
@@ -1415,8 +1434,8 @@ class Chaoxing:
                 params={
                     "api": "1",
                     "workId": _job["jobid"].replace("work-", ""),
-                    "jobid": _job["jobid"],
-                    "originJobId": _job["jobid"],
+                    "jobid": "" if _job.get("non_task") else _job["jobid"],
+                    "originJobId": "" if _job.get("non_task") else _job["jobid"],
                     "needRedirect": "true",
                     "skipHeader": "true",
                     "knowledgeid": str(_job_info["knowledgeid"]),

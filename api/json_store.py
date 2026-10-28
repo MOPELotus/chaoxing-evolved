@@ -127,6 +127,7 @@ DEFAULT_PROFILE = {
         "speed": 1.0,
         "jobs": 4,
         "course_jobs": 1,
+        "include_non_task": False,
         "notopen_action": "retry",
         "add_learning_count": False,
         "target_count": 100,
