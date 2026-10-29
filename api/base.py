@@ -1772,15 +1772,15 @@ class Chaoxing:
             logger.info("阅读任务学习 -> {}", _resp_json.get("msg", "平台已接受"))
             return StudyResult.SUCCESS
 
-    def study_book_read_duration(self, course, book, duration_seconds) -> StudyResult:
+    def study_book_read_duration(self, course, book, duration_seconds, progress_callback=None) -> StudyResult:
         try:
             context = resolve_book_reading(SessionManager.get_session(), course, book, book)
         except (RequestException, ValueError, KeyError):
             logger.warning('无法解析图书阅读入口，保留待处理状态: {}', book.get('title', ''))
             return StudyResult.ERROR
-        return self.study_read_duration(course, {'reading_context': context}, duration_seconds)
+        return self.study_read_duration(course, {'reading_context': context}, duration_seconds, progress_callback=progress_callback)
 
-    def study_read_duration(self, _course, _job_info, duration_seconds) -> StudyResult:
+    def study_read_duration(self, _course, _job_info, duration_seconds, progress_callback=None) -> StudyResult:
         """按阅读页的滚动日志机制上报阅读时长。
 
         超星阅读页会在进入时发送一次 ``/multimedia/readlog``，
@@ -1851,6 +1851,8 @@ class Chaoxing:
                 scroll_position = max(1, round(content_height * elapsed / duration_seconds))
                 if not send_read_log(scroll_position):
                     return StudyResult.ERROR
+                if progress_callback is not None:
+                    progress_callback(elapsed)
 
             logger.info('阅读日志发送结束: {} 秒；平台累计时长需另行核验，部分课程次日更新', duration_seconds)
             return StudyResult.SUCCESS

@@ -497,7 +497,7 @@ def process_chapter(
             challenge_attempt,
         )
         job_results.append(result)
-        if job["type"] == "read" and result.is_success() and reading_duration_seconds > 0 and deferred_readings is not None:
+        if job["type"] == "read" and result.is_success() and reading_duration_seconds > 0 and deferred_readings is not None and not job_info.get('book_readings'):
             deferred_readings[str(job_info["knowledgeid"])] = dict(job_info)
             logger.info("[阅读计时待执行] {} | {} 秒，移至独立阶段", point["title"], reading_duration_seconds)
         if job.get("non_task"):

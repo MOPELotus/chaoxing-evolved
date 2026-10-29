@@ -206,7 +206,7 @@ def decode_course_card(html_text: str, include_non_task: bool = False) -> Tuple[
         book_readings = {}
         for card in cards:
             properties = card.get('property') or {}
-            if properties.get('module') != 'insertreadV2' or card.get('job'):
+            if properties.get('module') != 'insertreadV2':
                 continue
             book_id = str(properties.get('id') or '')
             if book_id.isdecimal() and card.get('enc'):
