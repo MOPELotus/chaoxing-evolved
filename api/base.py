@@ -29,6 +29,7 @@ from api.cipher import AESCipher
 from api.config import GlobalConst as gc
 from api.cookies import save_cookies, use_cookies
 from api.runtime import get_runtime_context
+from api.book_reading import resolve_book_reading, valid_read_log_response
 from api.decode import (
     decode_course_list,
     decode_course_point,
@@ -1037,9 +1038,11 @@ class Chaoxing:
 
             job_list += _job_list
             pending = job_info.get("unsupported_non_task", []) + _job_info.pop("unsupported_non_task", [])
+            book_readings = job_info.get('book_readings', []) + _job_info.pop('book_readings', [])
             job_info.update(_job_info)
             if include_non_task:
                 job_info["unsupported_non_task"] = pending
+                job_info['book_readings'] = book_readings
 
         if not job_list:
             self.study_emptypage(course, point)
@@ -1769,6 +1772,14 @@ class Chaoxing:
             logger.info("阅读任务学习 -> {}", _resp_json.get("msg", "平台已接受"))
             return StudyResult.SUCCESS
 
+    def study_book_read_duration(self, course, book, duration_seconds) -> StudyResult:
+        try:
+            context = resolve_book_reading(SessionManager.get_session(), course, book, book)
+        except (RequestException, ValueError, KeyError):
+            logger.warning('无法解析图书阅读入口，保留待处理状态: {}', book.get('title', ''))
+            return StudyResult.ERROR
+        return self.study_read_duration(course, {'reading_context': context}, duration_seconds)
+
     def study_read_duration(self, _course, _job_info, duration_seconds) -> StudyResult:
         """按阅读页的滚动日志机制上报阅读时长。
 
@@ -1780,8 +1791,9 @@ class Chaoxing:
         if duration_seconds <= 0:
             return StudyResult.SUCCESS
 
-        course_id = str(_course.get("courseId") or "").strip()
-        knowledge_id = str(_job_info.get("knowledgeid") or "").strip()
+        context = _job_info.get('reading_context', {})
+        course_id = str(context.get('course_id') or _course.get("courseId") or "").strip()
+        knowledge_id = str(context.get('knowledge_id') or _job_info.get("knowledgeid") or "").strip()
         if not course_id or not knowledge_id:
             logger.error("阅读时长上报失败 -> 缺少 courseId 或 knowledgeid")
             return StudyResult.ERROR
@@ -1791,7 +1803,9 @@ class Chaoxing:
         page_params = {
             "courseId": course_id,
             "knowledgeId": knowledge_id,
-            "_from_": "",
+            "_from_": context.get('_from_', ''),
+            "_fromV2_": context.get('_fromV2_', ''),
+            "rtag": context.get('rtag', ''),
         }
         log_url = "https://mooc1.chaoxing.com/multimedia/readlog"
         # 使用足够的可滚动高度，并在设定时长内线性推进位置。
@@ -1800,12 +1814,13 @@ class Chaoxing:
         try:
             page_response = session.get(page_url, params=page_params)
             if page_response.status_code != 200:
-                logger.error(
-                    f"阅读页访问失败 -> [{page_response.status_code}]{page_response.text[:200]}"
-                )
+                logger.warning('阅读页访问失败（HTTP {}）', page_response.status_code)
                 return StudyResult.ERROR
 
             referer = page_response.url
+            if '/multimedia/readlog' not in page_response.text or 'courseMainBox' not in page_response.text:
+                logger.warning('未获取到有效阅读正文，停止计时')
+                return StudyResult.ERROR
 
             def send_read_log(scroll_position: int) -> bool:
                 response = session.get(
@@ -1815,13 +1830,12 @@ class Chaoxing:
                         "chapterid": knowledge_id,
                         "height": content_height,
                         "h": scroll_position,
+                        **{key: context[key] for key in ('_from_', '_fromV2_', 'rtag') if context.get(key)},
                     },
                     headers={"Referer": referer},
                 )
-                if response.status_code != 200:
-                    logger.error(
-                        f"阅读时长上报失败 -> [{response.status_code}]{response.text[:200]}"
-                    )
+                if not valid_read_log_response(response):
+                    logger.warning('阅读日志未返回有效确认，停止计时（HTTP {}）', response.status_code)
                     return False
                 return True
 
@@ -1838,7 +1852,7 @@ class Chaoxing:
                 if not send_read_log(scroll_position):
                     return StudyResult.ERROR
 
-            logger.info(f"阅读时长上报完成: {duration_seconds} 秒")
+            logger.info('阅读日志发送结束: {} 秒；平台累计时长需另行核验，部分课程次日更新', duration_seconds)
             return StudyResult.SUCCESS
         except RequestException as exc:
             logger.error(f"阅读时长上报失败 -> {exc}")

@@ -203,6 +203,20 @@ def decode_course_card(html_text: str, include_non_task: bool = False) -> Tuple[
     job_list = _process_attachment_cards(cards, include_non_task=include_non_task)
     if include_non_task:
         pending = {}
+        book_readings = {}
+        for card in cards:
+            properties = card.get('property') or {}
+            if properties.get('module') != 'insertreadV2' or card.get('job'):
+                continue
+            book_id = str(properties.get('id') or '')
+            if book_id.isdecimal() and card.get('enc'):
+                book_readings[str(properties.get('mid') or book_id)] = {
+                    'id': book_id, 'title': str(properties.get('title') or book_id),
+                    'mid': properties.get('mid', ''), 'source_jobid': properties.get('_jobid', ''),
+                    'jobid': card.get('jobid', ''), 'enc': card['enc'],
+                    'knowledgeid': job_info.get('knowledgeid', ''),
+                }
+        job_info['book_readings'] = list(book_readings.values())
         for frame in BeautifulSoup(html_text, "lxml").select("iframe[module][data]"):
             module = frame.get("module", "")
             if module in {"insertvideo", "insertaudio", "insertdoc", "work"}:
@@ -212,10 +226,14 @@ def decode_course_card(html_text: str, include_non_task: bool = False) -> Tuple[
             except (ValueError, TypeError):
                 properties = {}
             title = properties.get("title") or properties.get("bookname") or properties.get("name") or module
+            if module == 'insertreadV2' and str(properties.get('mid') or properties.get('id') or '') in book_readings:
+                continue
             pending[(module, properties.get("mid") or str(title))] = {"module": module, "title": str(title)}
         for card in cards:
             properties = card.get("property", {})
             module = properties.get("module", card.get("type", "unknown"))
+            if module == 'insertreadV2' and str(properties.get('mid') or properties.get('id') or '') in book_readings:
+                continue
             if not card.get("job") and module not in {"insertvideo", "insertaudio", "insertdoc", "work"}:
                 title = properties.get("title") or properties.get("bookname") or properties.get("name") or module
                 pending[(module, properties.get("mid") or str(title))] = {"module": module, "title": str(title)}

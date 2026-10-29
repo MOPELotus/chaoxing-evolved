@@ -116,6 +116,21 @@ class RunPhaseTests(unittest.TestCase):
         self.assertEqual(course['_reading_outcome'], '无待执行计时')
         client.study_read_duration.assert_not_called()
 
+    def test_discovered_book_runs_only_in_independent_reading_phase(self):
+        client = Mock()
+        book = {'id': '99', 'title': 'Book', 'knowledgeid': 'point'}
+        course = {'title': 'course', 'courseId': '12', 'clazzId': '34', 'cpi': 'member'}
+        point = {'id': 'point', 'title': 'Reading', 'has_finished': True}
+        client.get_job_list.return_value = ([], {'book_readings': [book]})
+        with patch('api.study_runner.process_job') as process:
+            process_chapter(client, course, point, 1, include_non_task=True)
+        process.assert_not_called()
+        client.study_book_read_duration.assert_not_called()
+        client.study_book_read_duration.return_value = StudyResult.SUCCESS
+        run_followup_phases(client, [course], {'reading_duration_seconds': 9999}, 1)
+        client.study_book_read_duration.assert_called_once_with(course, book, 9999)
+        self.assertEqual(course['_reading_outcome'], '执行成功')
+
 
 if __name__ == '__main__':
     unittest.main()

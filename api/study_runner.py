@@ -465,6 +465,8 @@ def process_chapter(
         return ChapterResult.ERROR
     if include_non_task:
         jobs, job_info = chaoxing.get_job_list(course, point, include_non_task=True)
+        for book in job_info.get('book_readings', []):
+            course.setdefault('_book_readings', {})[str(book['id'])] = book
         logger.info("[非任务点补跑] {} | 可处理 {} | 待人工 {}", point["title"], len(jobs), len(job_info.get("unsupported_non_task", [])))
         for pending in job_info.get("unsupported_non_task", []):
             logger.warning("[非任务点待人工] {} | {} | {}", point["title"], pending["module"], pending["title"])
@@ -554,6 +556,7 @@ def process_course(chaoxing: Chaoxing, course: dict[str, Any], config: dict[str,
     global _progress_users, _progress_formatter
     chaoxing._fatal_task_error = ""
     course["_reading_targets"] = {}
+    course['_book_readings'] = {}
     if config.get("include_non_task", False):
         course["_non_task_pending"] = {}
         course["_non_task_results"] = {}
@@ -673,11 +676,12 @@ def run_followup_phases(chaoxing: Chaoxing, courses: list[dict], config: dict, w
                         raise RuntimeError("学习次数执行失败")
                 else:
                     targets = list(course.get("_reading_targets", {}).values())
+                    books = list(course.get('_book_readings', {}).values())
                     pending_readings = [
                         pending for pending in course.get("_non_task_pending", {}).values()
                         if pending.get("module") == "insertreadV2"
                     ]
-                    if not targets and not pending_readings:
+                    if not targets and not books and not pending_readings:
                         results[index] = "无待执行计时"
                         return
                     for position, info in enumerate(targets):
@@ -685,6 +689,10 @@ def run_followup_phases(chaoxing: Chaoxing, courses: list[dict], config: dict, w
                         result = chaoxing.study_read_duration(course, info, duration)
                         if result.is_failure():
                             raise RuntimeError("阅读计时执行失败")
+                    for position, book in enumerate(books):
+                        logger.info('[独立图书阅读] {} | {} | {}/{} | {} 秒', course['title'], book['title'], position + 1, len(books), duration)
+                        if chaoxing.study_book_read_duration(course, book, duration).is_failure():
+                            raise RuntimeError('图书阅读计时执行失败')
                     if pending_readings:
                         for pending in pending_readings:
                             logger.warning("[阅读计时待处理] {} | {} | 图书阅读尚未适配，未执行计时，不代表已完成", course["title"], pending["title"])
