@@ -172,6 +172,22 @@ bash scripts/build_release_unix.sh --tag vtest --os linux --arch x64 --output-di
 - Linux 发布会额外生成 `AppImage`、`deb` 与 `rpm`
 - 由于 Nuitka 当前对 `PyQt6 on macOS` 的支持受限，GitHub Release 工作流暂不发布 macOS 构建
 
+## 独立阅读任务
+
+已有账号配置可单独扫描全部课程的图书阅读，不重跑答题、视频或学习访问次数：
+
+```bash
+python -m api.reading_worker --profile "配置名称" --expected-name "平台实名" --scan-only
+```
+
+去掉 `--scan-only` 即按顺序执行阅读日志流程，`--duration 9999` 设置每本书的目标秒数。当前支持任务卡中带有效访问签名的 `insertreadV2` 专题阅读；无法验证的入口保留待处理，不调用错误的正文接口。
+
+- 课程归属参数由官方预览页获取，专题与章节标识由官方目录解析。
+- 进度写入对应配置的 `.reading-progress.json`，中断后仅继续尚未发送的时长。
+- 同一配置使用独占锁防止重复启动；若异常退出留下 `.reading-progress.lock`，必须确认旧进程已退出再删除锁。
+- 日志请求被接受不代表平台累计时长已经入账；状态 `logs_sent_unverified` 仍需平台核验，部分阅读次日更新。
+- 正常批量运行时，开启“非任务点运行”及阅读计时后，识别到的图书阅读也会进入独立阅读阶段。
+
 ## 与上游的关系
 
 - 上游项目以命令行刷课流程为主
