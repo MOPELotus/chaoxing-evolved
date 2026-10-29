@@ -673,7 +673,11 @@ def run_followup_phases(chaoxing: Chaoxing, courses: list[dict], config: dict, w
                         raise RuntimeError("学习次数执行失败")
                 else:
                     targets = list(course.get("_reading_targets", {}).values())
-                    if not targets:
+                    pending_readings = [
+                        pending for pending in course.get("_non_task_pending", {}).values()
+                        if pending.get("module") == "insertreadV2"
+                    ]
+                    if not targets and not pending_readings:
                         results[index] = "无待执行计时"
                         return
                     for position, info in enumerate(targets):
@@ -681,6 +685,11 @@ def run_followup_phases(chaoxing: Chaoxing, courses: list[dict], config: dict, w
                         result = chaoxing.study_read_duration(course, info, duration)
                         if result.is_failure():
                             raise RuntimeError("阅读计时执行失败")
+                    if pending_readings:
+                        for pending in pending_readings:
+                            logger.warning("[阅读计时待处理] {} | {} | 图书阅读尚未适配，未执行计时，不代表已完成", course["title"], pending["title"])
+                        results[index] = f"待处理图书阅读 {len(pending_readings)} 项；已执行计时 {len(targets)} 项"
+                        return
                 results[index] = "执行成功"
             except Exception as exc:
                 results[index] = "执行失败"

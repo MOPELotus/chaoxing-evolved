@@ -88,6 +88,34 @@ class RunPhaseTests(unittest.TestCase):
         self.assertEqual(course['_count_outcome'], '执行失败')
         client.increase_chapter_learning_count.assert_not_called()
 
+    def test_book_reading_is_reported_in_reading_phase_without_wrong_endpoint(self):
+        client = Mock()
+        course = {'title': 'course', '_non_task_pending': {
+            ('point', 'insertreadV2', 'Book'): {'module': 'insertreadV2', 'title': 'Book'},
+            ('vote', 'insertvote', 'Survey'): {'module': 'insertvote', 'title': 'Survey'},
+        }}
+        run_followup_phases(client, [course], {'reading_duration_seconds': 9999}, 1)
+        self.assertEqual(course['_reading_outcome'], '待处理图书阅读 1 项；已执行计时 0 项')
+        client.study_read_duration.assert_not_called()
+
+    def test_book_pending_does_not_block_supported_reading(self):
+        client = Mock()
+        client.study_read_duration.return_value = StudyResult.SUCCESS
+        course = {'title': 'course', '_reading_targets': {'point': {'knowledgeid': 'point'}},
+                  '_non_task_pending': {('book', 'insertreadV2', 'Book'): {'module': 'insertreadV2', 'title': 'Book'}}}
+        run_followup_phases(client, [course], {'reading_duration_seconds': 9999}, 1)
+        client.study_read_duration.assert_called_once_with(course, {'knowledgeid': 'point'}, 9999)
+        self.assertEqual(course['_reading_outcome'], '待处理图书阅读 1 项；已执行计时 1 项')
+
+    def test_survey_does_not_count_as_pending_reading(self):
+        client = Mock()
+        course = {'title': 'course', '_non_task_pending': {
+            ('point', 'insertvote', 'Survey'): {'module': 'insertvote', 'title': 'Survey'},
+        }}
+        run_followup_phases(client, [course], {'reading_duration_seconds': 9999}, 1)
+        self.assertEqual(course['_reading_outcome'], '无待执行计时')
+        client.study_read_duration.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()
