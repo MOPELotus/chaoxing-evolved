@@ -10,6 +10,15 @@ def script_string(source, name):
     return json.loads(match[1]) if match else ''
 
 
+def preview_statistics(source):
+    text = BeautifulSoup(source, 'html.parser').get_text(' ', strip=True)
+    match = re.search(r'阅读总时长\s*[:：]\s*(\d+(?:\.\d+)?)\s*分钟', text)
+    return {
+        'reported_minutes': float(match[1]) if match else None,
+        'next_day_update': '次日更新' in text or '次日统计' in text,
+    }
+
+
 def resolve_book_reading(session, course, book, info):
     book_id = str(book.get('id') or '')
     if not book_id.isdecimal() or not book.get('enc'):
@@ -46,7 +55,8 @@ def resolve_book_reading(session, course, book, info):
         node_id = query.get('knowledgeId', [''])[0]
         if query.get('courseId', [''])[0] != book_id or not node_id.isdecimal():
             continue
-        return {'course_id': book_id, 'knowledge_id': node_id, **attribution_params}
+        return {'course_id': book_id, 'knowledge_id': node_id, **attribution_params,
+                'statistics': preview_statistics(response.text)}
     raise ValueError('专题没有可验证的阅读章节，可能已下架或需要登录')
 
 

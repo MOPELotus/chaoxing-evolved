@@ -188,6 +188,14 @@ python -m api.reading_worker --profile "配置名称" --expected-name "平台实
 - 日志请求被接受不代表平台累计时长已经入账；状态 `logs_sent_unverified` 仍需平台核验，部分阅读次日更新。
 - 正常批量运行时，开启“非任务点运行”及阅读计时后，识别到的图书阅读也会进入独立阅读阶段。
 
+次日可只读核验官方预览页显示的统计，不重发阅读日志、不修改计时进度：
+
+```bash
+python -m api.reading_verify --profile "配置名称" --expected-name "平台实名"
+```
+
+报告另存为配置对应的 `.reading-verification.json`，同时列出本地已接受秒数、平台显示分钟数和次日更新提示。平台缺失值保留为空，不当作零分；跨日显示值也不能直接当作全部累计时长。
+
 ## 与上游的关系
 
 - 上游项目以命令行刷课流程为主

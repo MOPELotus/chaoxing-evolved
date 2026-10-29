@@ -3,11 +3,17 @@ import unittest
 from unittest.mock import Mock, patch
 
 from api.base import Chaoxing, SessionManager, StudyResult
-from api.book_reading import resolve_book_reading, valid_read_log_response
+from api.book_reading import preview_statistics, resolve_book_reading, valid_read_log_response
 from api.decode import decode_course_card
 
 
 class BookReadingTests(unittest.TestCase):
+    def test_statistics_preserve_missing_and_next_day_semantics(self):
+        self.assertEqual(preview_statistics('<p>您的阅读总时长: 0.0 分钟 (当天阅读时长，次日更新)</p>'),
+                         {'reported_minutes': 0.0, 'next_day_update': True})
+        self.assertEqual(preview_statistics('<p>您的阅读总时长：12.5 分钟</p>')['reported_minutes'], 12.5)
+        self.assertIsNone(preview_statistics('<title>请登录</title>')['reported_minutes'])
+
     def responses(self, attribution='12_34_56_signature', link=None):
         preview = Mock(text=f'<script>var from = "{attribution}"; var _fromV2_ = "v2"; var rtag = ""; id = "portal==";</script>')
         portal = Mock(url='https://mooc1.chaoxing.com/mooc-ans/zt/portal/portal==', text=link or '<a href="/mooc-ans/ztnodedetailcontroller/visitnodedetail?courseId=99&amp;knowledgeId=88">Text</a>')
