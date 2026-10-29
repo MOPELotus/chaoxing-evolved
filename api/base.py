@@ -1772,6 +1772,9 @@ class Chaoxing:
             logger.info("阅读任务学习 -> {}", _resp_json.get("msg", "平台已接受"))
             return StudyResult.SUCCESS
 
+    def get_book_reading_statistics(self, course, book):
+        return resolve_book_reading(SessionManager.get_session(), course, book, book)['statistics']
+
     def study_book_read_duration(self, course, book, duration_seconds, progress_callback=None) -> StudyResult:
         try:
             context = resolve_book_reading(SessionManager.get_session(), course, book, book)

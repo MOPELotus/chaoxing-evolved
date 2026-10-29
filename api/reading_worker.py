@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import os
 import sys
 from datetime import datetime, timezone
@@ -70,9 +71,28 @@ def run_readings(client, targets, pending, duration, state_path, scan_only=False
     for key, (course, book) in targets.items():
         item = state['items'][key]
         previous = int(item.get('acknowledged_seconds') or 0)
-        remaining = max(0, duration - previous)
+        if 'baseline_reported_seconds' not in item:
+            try:
+                statistics = client.get_book_reading_statistics(course, book)
+                minutes = statistics.get('reported_minutes')
+                if minutes is None or not math.isfinite(float(minutes)) or float(minutes) < 0:
+                    raise ValueError('平台阅读统计不可用，不能确定还需补多少时长')
+                item['baseline_reported_seconds'] = math.floor(float(minutes) * 60)
+                item['baseline_checked_at'] = datetime.now(timezone.utc).isoformat()
+                item['statistics_next_day'] = statistics.get('next_day_update', False)
+                save_state(state_path, state)
+            except Exception as error:
+                item['status'] = 'planning_failed'
+                save_state(state_path, state)
+                failures += 1
+                logger.warning('[阅读计划待处理] {} | {} | {}', course['title'], book['title'], type(error).__name__)
+                continue
+        baseline = int(item['baseline_reported_seconds'])
+        remaining = max(0, duration - baseline - previous)
         if remaining == 0:
-            logger.info('[阅读跳过] {} | {} | 本地日志已发送达到目标，平台累计仍需核验', course['title'], book['title'])
+            item['status'] = 'platform_target_already_met' if baseline >= duration else 'logs_sent_unverified'
+            save_state(state_path, state)
+            logger.info('[阅读跳过] {} | {} | 平台基线 {} 秒，已发送 {} 秒，目标 {} 秒', course['title'], book['title'], baseline, previous, duration)
             continue
         item['status'] = 'running'
         save_state(state_path, state)
@@ -82,7 +102,7 @@ def run_readings(client, targets, pending, duration, state_path, scan_only=False
             item['updated_at'] = datetime.now(timezone.utc).isoformat()
             save_state(state_path, state)
             if elapsed % 60 == 0 or elapsed == remaining:
-                logger.info('[阅读进度] {} | {} | {}/{} 秒（日志已接受，非平台累计确认）', course['title'], book['title'], previous + elapsed, duration)
+                logger.info('[阅读进度] {} | {} | 已接受日志 {} 秒，平台历史 {} 秒，目标 {} 秒（新增时长待次日核验）', course['title'], book['title'], previous + elapsed, baseline, duration)
 
         logger.info('[阅读开始] {} | {} | 剩余 {} 秒', course['title'], book['title'], remaining)
         try:
