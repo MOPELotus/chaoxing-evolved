@@ -652,10 +652,10 @@ def run_course_batch(courses: list[dict], workers: int, execute, interrupted: th
 def run_followup_phases(chaoxing: Chaoxing, courses: list[dict], config: dict, workers: int) -> None:
     duration = config.get("reading_duration_seconds", 0)
     phases = []
-    if to_bool(config.get("add_learning_count", False)):
-        phases.append("学习次数")
     if duration > 0:
         phases.append("阅读计时")
+    if to_bool(config.get("add_learning_count", False)):
+        phases.append("学习次数")
     for phase in phases:
         interrupted = threading.Event()
         results = ["未执行"] * len(courses)

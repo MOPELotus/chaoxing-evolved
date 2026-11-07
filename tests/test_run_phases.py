@@ -23,7 +23,7 @@ class RunPhaseTests(unittest.TestCase):
         self.assertEqual(targets, {'point': {'knowledgeid': 'point'}})
         client.study_read_duration.assert_not_called()
 
-    def test_tasks_then_counts_then_reading_with_isolated_failures(self):
+    def test_tasks_then_reading_then_counts_with_isolated_failures(self):
         client = Chaoxing()
         client.login = Mock(return_value={'status': True})
         courses = [{'courseId': str(index), 'clazzId': str(index), 'cpi': 'member', 'title': str(index)} for index in range(3)]
@@ -32,7 +32,7 @@ class RunPhaseTests(unittest.TestCase):
         config = {'speed': 1, 'jobs': 4, 'course_jobs': 2, 'course_list': [], 'reading_duration_seconds': 9999, 'add_learning_count': True, 'target_count': 300}
         lock = threading.Lock()
         tasks_finished = set()
-        counts_finished = set()
+        readings_finished = set()
         calls = []
 
         def task(course_client, course, common):
@@ -44,17 +44,18 @@ class RunPhaseTests(unittest.TestCase):
 
         def count(course, points, target):
             self.assertEqual(len(tasks_finished), 3)
+            self.assertEqual(len(readings_finished), 3)
             self.assertEqual(target, 300)
             with lock:
                 calls.append(('count', course['courseId']))
-                counts_finished.add(course['courseId'])
             return StudyResult.SUCCESS
 
         def read(course, info, duration):
-            self.assertEqual(len(counts_finished), 3)
+            self.assertEqual(len(tasks_finished), 3)
             self.assertEqual(duration, 9999)
             with lock:
                 calls.append(('read', course['courseId']))
+                readings_finished.add(course['courseId'])
             return StudyResult.ERROR if course['courseId'] == '1' else StudyResult.SUCCESS
 
         client.increase_chapter_learning_count = Mock(side_effect=count)
@@ -67,7 +68,7 @@ class RunPhaseTests(unittest.TestCase):
             report = stack.enter_context(patch('api.study_runner.log_course_report'))
             with self.assertRaises(RuntimeError):
                 run_loaded_profile({})
-        self.assertEqual([phase for phase, identity in calls], ['count'] * 3 + ['read'] * 3)
+        self.assertEqual([phase for phase, identity in calls], ['read'] * 3 + ['count'] * 3)
         self.assertEqual(report.call_count, 1)
         self.assertEqual(report.call_args.args[2], ['执行失败', '执行结束', '执行结束'])
         self.assertEqual(courses[1]['_reading_outcome'], '执行失败')
