@@ -137,6 +137,7 @@ def _normalize_common_config(section: dict[str, Any]) -> dict[str, Any]:
         "course_list": course_list,
         "speed": float(section.get("speed", 1.0) or 1.0),
         "jobs": max(1, int(section.get("jobs", 4) or 4)),
+        "chapter_retry_limit": max(0, int(section.get("chapter_retry_limit", 5))),
         "course_jobs": max(1, int(section.get("course_jobs", 1) or 1)),
         "include_non_task": to_bool(section.get("include_non_task", False)),
         "notopen_action": str(section.get("notopen_action", "retry") or "retry").strip(),
@@ -293,10 +294,11 @@ class JobProcessor:
         self.chaoxing = chaoxing
         self.course = course
         self.speed = config["speed"]
-        self.normal_max_tries = 5
-        self.challenge_max_tries = max(
+        self.normal_max_tries = max(0, int(config.get("chapter_retry_limit", 5)))
+        self.retry_delay_seconds = 30 if self.normal_max_tries == 0 else 0
+        self.challenge_max_tries = 0 if self.normal_max_tries == 0 else min(self.normal_max_tries, max(
             1, min(3, int(config.get("challenge_retry_attempts", 3) or 3))
-        )
+        ))
         self.tasks = tasks
         self.failed_tasks: list[ChapterTask] = []
         self.abort_event = threading.Event()
@@ -368,7 +370,7 @@ class JobProcessor:
                         continue
 
                     task.tries += 1
-                    if task.tries >= self.normal_max_tries:
+                    if task.tries >= (self.normal_max_tries or 5):
                         logger.error(
                             "章节未开启: {} 可能由于上一章节的章节检测未完成，也可能由于章节已关闭，请手动检查后再试。",
                             task.point["title"],
@@ -386,7 +388,7 @@ class JobProcessor:
                         if self._is_challenge(task.point)
                         else self.normal_max_tries
                     )
-                    if task.tries >= retry_limit:
+                    if retry_limit > 0 and task.tries >= retry_limit:
                         logger.error(
                             "任务失败，已达到重试上限: {} ({}/{} 次尝试)",
                             task.point["title"],
@@ -400,7 +402,7 @@ class JobProcessor:
                         "任务失败，准备重试: {} ({}/{} 次尝试)",
                         task.point["title"],
                         task.tries,
-                        retry_limit,
+                        retry_limit or "不限",
                     )
                     self.retry_queue.put(task)
 
@@ -427,6 +429,8 @@ class JobProcessor:
         try:
             while True:
                 task = self.retry_queue.get()
+                if self.retry_delay_seconds:
+                    self.abort_event.wait(self.retry_delay_seconds)
                 if self.abort_event.is_set():
                     self.retry_queue.task_done()
                     self.task_queue.task_done()
