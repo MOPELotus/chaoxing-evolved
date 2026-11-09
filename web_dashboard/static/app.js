@@ -63,7 +63,7 @@ function renderAccounts() {
   for (const school of state.data?.schools || []) {
     const rows = school.accounts.filter(a => !term || `${a.name} ${a.username}`.toLowerCase().includes(term));
     if (!rows.length) continue;
-    html += `<div class="school-label">${esc(school.name)} · ${rows.length}</div>`;
+    html += `<div class="school-label ${school.archived ? "archive-label" : ""}">${school.archived ? "ARCHIVE · " : ""}${esc(school.name)} · ${rows.length}</div>`;
     html += rows.map(account => `
       <button class="account-button ${account.username === state.selectedAccount ? "active" : ""}" data-account="${esc(account.username)}" type="button">
         <span class="avatar">${esc(initials(account.name))}</span>

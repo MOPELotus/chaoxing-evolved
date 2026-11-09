@@ -1,6 +1,9 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
-from web_dashboard.service import normalize_status, parse_assessment_html, parse_school, parse_task_cards
+from web_dashboard.service import DashboardService, normalize_status, parse_assessment_html, parse_school, parse_task_cards
 
 
 class DashboardParsingTests(unittest.TestCase):
@@ -41,6 +44,61 @@ class DashboardParsingTests(unittest.TestCase):
     def test_normalizes_affiliated_school_systems(self):
         html = '<ul id="messageFid"><li>\u5c71\u897f\u519c\u4e1a\u5927\u5b66\u5b9e\u9a8c\u5ba4\u51c6\u5165\u7cfb\u7edf<p>\u5b66\u53f7:2</p></li></ul>'
         self.assertEqual(parse_school(html), "\u5c71\u897f\u519c\u4e1a\u5927\u5b66")
+
+    def test_refresh_keeps_last_complete_snapshot_until_atomic_publish(self):
+        with TemporaryDirectory() as directory:
+            service = DashboardService(Path(directory))
+            service._snapshot = {
+                "updated_at": "old",
+                "partial": False,
+                "summary": {"accounts": 2, "running": 0, "selected_courses": 2},
+                "schools": [],
+            }
+            observed = []
+
+            def scan(username, _profiles, _running):
+                observed.append(service.dashboard()["summary"]["accounts"])
+                return {
+                    "username": username,
+                    "name": username,
+                    "school": "School",
+                    "status": "idle",
+                    "selected_courses": 1,
+                    "progress": {"done": 0, "total": 1, "percent": 0},
+                    "courses": [],
+                }
+
+            with (
+                patch.object(service, "_profile_groups", return_value={"one": [object()], "two": [object()]}),
+                patch.object(service, "_running_profiles", return_value=set()),
+                patch.object(service, "_scan_account", side_effect=scan),
+            ):
+                service._refresh_once()
+
+            self.assertEqual(observed, [2, 2])
+            self.assertEqual(service.dashboard()["summary"]["accounts"], 2)
+            self.assertFalse(service.dashboard()["partial"])
+
+    def test_publish_moves_legacy_profiles_into_archive_group(self):
+        with TemporaryDirectory() as directory:
+            service = DashboardService(Path(directory))
+            base = {
+                "status": "idle",
+                "selected_courses": 1,
+                "progress": {"done": 0, "total": 1, "percent": 0},
+                "courses": [{"selected": True}],
+            }
+            service._publish(
+                [
+                    {**base, "username": "1", "name": "Current", "school": "School", "archived": False},
+                    {**base, "username": "2", "name": "Legacy", "school": "Old School", "archived": True},
+                ]
+            )
+            snapshot = service.dashboard()
+            self.assertEqual(snapshot["schools"][-1]["name"], "历史归档")
+            self.assertEqual(snapshot["schools"][-1]["accounts"][0]["name"], "Legacy")
+            self.assertEqual(snapshot["summary"]["selected_courses"], 1)
+            self.assertEqual(snapshot["summary"]["archived_accounts"], 1)
 
 
 if __name__ == "__main__":

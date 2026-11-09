@@ -53,6 +53,7 @@ button { cursor: pointer; }
 .panel-heading input:focus { border-color: var(--teal); box-shadow: 0 0 0 3px rgba(22,123,114,.1); }
 .account-list { max-height: calc(100vh - 310px); padding: 12px; overflow: auto; }
 .school-label { margin: 12px 8px 7px; color: var(--muted); font-size: 11px; font-weight: 700; letter-spacing: .03em; }
+.school-label.archive-label { margin-top: 20px; padding-top: 13px; border-top: 1px solid var(--line); color: #8b6f52; }
 .account-button { width: 100%; display: grid; grid-template-columns: 38px minmax(0,1fr) auto; align-items: center; gap: 10px; margin-bottom: 7px; padding: 11px; border: 1px solid transparent; border-radius: 11px; text-align: left; background: transparent; }
 .account-button:hover { background: #f4f7f5; }
 .account-button.active { border-color: #c9e0da; background: var(--teal-soft); }

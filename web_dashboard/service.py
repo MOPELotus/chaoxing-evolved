@@ -251,8 +251,8 @@ class DashboardService:
                     account["status"] = "error"
                     account["error"] = f"{type(exc).__name__}: {exc}"
                 accounts.append(account)
-                self._publish(accounts, partial=True)
-            self._publish(accounts, partial=False)
+            if not self._stop.is_set() and len(accounts) == len(groups):
+                self._publish(accounts)
         finally:
             with self._state_lock:
                 self._refreshing = False
@@ -265,21 +265,42 @@ class DashboardService:
                         return copy.deepcopy(account)
         return None
 
-    def _publish(self, accounts: list[dict[str, Any]], partial: bool) -> None:
+    def _publish(self, accounts: list[dict[str, Any]]) -> None:
         school_map: dict[str, list[dict[str, Any]]] = {}
+        archived: list[dict[str, Any]] = []
         for account in accounts:
-            school_map.setdefault(account.get("school") or "\u672a\u8bc6\u522b\u5b66\u6821", []).append(account)
+            if account.get("archived"):
+                archived.append(account)
+            else:
+                school_map.setdefault(account.get("school") or "\u672a\u8bc6\u522b\u5b66\u6821", []).append(account)
         schools = [
             {"name": school, "accounts": sorted(rows, key=lambda row: row.get("name") or row.get("username"))}
             for school, rows in sorted(school_map.items(), key=lambda item: item[0])
         ]
-        selected = sum(sum(1 for c in account.get("courses", []) if c.get("selected")) for account in accounts)
+        if archived:
+            schools.append(
+                {
+                    "name": "\u5386\u53f2\u5f52\u6863",
+                    "archived": True,
+                    "accounts": sorted(archived, key=lambda row: row.get("name") or row.get("username")),
+                }
+            )
+        selected = sum(
+            sum(1 for c in account.get("courses", []) if c.get("selected"))
+            for account in accounts
+            if not account.get("archived")
+        )
         running = sum(1 for account in accounts if account.get("status") == "running")
         snapshot = {
             "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-            "partial": partial,
+            "partial": False,
             "schools": schools,
-            "summary": {"accounts": len(accounts), "running": running, "selected_courses": selected},
+            "summary": {
+                "accounts": len(accounts),
+                "running": running,
+                "selected_courses": selected,
+                "archived_accounts": len(archived),
+            },
         }
         with self._state_lock:
             self._snapshot = snapshot
@@ -461,12 +482,14 @@ class DashboardService:
             rows.sort(key=lambda item: (not item["selected"], item["status"] == "completed", item["title"]))
             percent = round(total_done * 100 / total_points, 1) if total_points else 0
             is_running = any(profile.name in running_profiles for profile in profiles)
+            archived = not any(profile.name.startswith("hosted-") for profile in profiles)
             return {
                 "username": username,
                 "name": name,
                 "school": school,
+                "archived": archived,
                 "fid": fid,
-                "status": "running" if is_running else ("completed" if total_points and total_done == total_points else "idle"),
+                "status": "archived" if archived else ("running" if is_running else ("completed" if total_points and total_done == total_points else "idle")),
                 "profiles": [profile.name for profile in profiles],
                 "selected_courses": selected_count,
                 "progress": {"done": total_done, "total": total_points, "percent": percent},
