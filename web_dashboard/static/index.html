@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>学习通运行观测台</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">CX</span>
+        <div>
+          <h1>学习通运行观测台</h1>
+          <p>课程、章节与只读状态汇总</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <span class="sync-state"><i></i><span id="syncText">正在连接</span></span>
+        <button class="refresh-button" id="refreshButton" type="button">刷新平台数据</button>
+      </div>
+    </header>
+
+    <section class="overview" aria-label="总体概览">
+      <article><span>账号</span><strong id="accountCount">—</strong></article>
+      <article><span>运行中</span><strong id="runningCount">—</strong></article>
+      <article><span>执行列表课程</span><strong id="selectedCount">—</strong></article>
+      <p class="updated">平台快照 <time id="updatedAt">等待首次同步</time></p>
+    </section>
+
+    <main class="workspace">
+      <aside class="account-panel">
+        <div class="panel-heading">
+          <div>
+            <span class="eyebrow">ACCOUNTS</span>
+            <h2>账号</h2>
+          </div>
+          <input id="accountSearch" type="search" placeholder="搜索姓名或账号" aria-label="搜索账号">
+        </div>
+        <div id="accountList" class="account-list">
+          <div class="skeleton-card"></div><div class="skeleton-card"></div><div class="skeleton-card"></div>
+        </div>
+      </aside>
+
+      <section class="detail-panel" id="detailPanel">
+        <div class="empty-state" id="emptyState">
+          <span class="empty-glyph">◎</span>
+          <h2>正在读取运行数据</h2>
+          <p>首次同步会逐个账号读取平台目录，页面会自动更新。</p>
+        </div>
+        <div id="accountDetail" hidden>
+          <header class="account-hero">
+            <div>
+              <div class="hero-meta"><span id="schoolName"></span><span id="accountNumber"></span></div>
+              <h2 id="accountName"></h2>
+              <p id="accountSummary"></p>
+            </div>
+            <div class="hero-progress">
+              <strong id="totalPercent">0%</strong>
+              <span>选中课程总进度</span>
+            </div>
+          </header>
+
+          <div class="tabs" role="tablist" aria-label="账号详情">
+            <button class="tab active" data-tab="courses" role="tab" aria-selected="true">课程任务点</button>
+            <button class="tab" data-tab="homework" role="tab" aria-selected="false">作业状态</button>
+            <button class="tab" data-tab="exam" role="tab" aria-selected="false">考试状态</button>
+          </div>
+
+          <section class="tab-content" id="coursesTab">
+            <div class="legend">
+              <span><i class="legend-check">✓</i> 在执行列表</span>
+              <span><i class="legend-cross">×</i> 未选择</span>
+              <span><i class="dot running"></i> 执行中</span>
+              <span><i class="dot done"></i> 已完成</span>
+              <span><i class="dot failed"></i> 失败</span>
+            </div>
+            <div id="courseList" class="course-list"></div>
+          </section>
+
+          <section class="tab-content" id="assessmentTab" hidden>
+            <div id="assessmentContent" class="assessment-content"></div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/app.js" defer></script>
+</body>
+</html>
