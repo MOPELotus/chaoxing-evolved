@@ -8,6 +8,15 @@ from api.decode import _rich_node_text, decode_questions_info
 
 
 class RichTextDecodeTests(unittest.TestCase):
+    def test_relative_latex_image_uses_the_work_page_origin(self):
+        node = BeautifulSoup('<div><img src="/ananas/latex/p/385111"></div>', 'html.parser').div
+        text, blank_count, underline_count = _rich_node_text(node)
+        self.assertEqual(
+            text,
+            '[QUESTION_IMAGE:https://mooc1.chaoxing.com/ananas/latex/p/385111]',
+        )
+        self.assertEqual((blank_count, underline_count), (0, 0))
+
     def test_underlined_whitespace_is_a_blank(self):
         node = BeautifulSoup(
             '<div>A <span style="text-decoration: underline;">&nbsp; &nbsp; &nbsp;</span> B</div>',

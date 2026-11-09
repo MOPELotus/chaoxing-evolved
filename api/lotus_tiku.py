@@ -26,6 +26,18 @@ _HTML_IMAGE = re.compile(r'<img\b[^>]*?\bsrc=["\']([^"\']+)["\']', re.IGNORECASE
 _BLANK = re.compile(r"\[BLANK_\d+\]", re.IGNORECASE)
 
 
+def _sniff_image_mime(data: bytes) -> str:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return ""
+
+
 # Only known protocol codes enter logs; upstream text can contain private data.
 _LOTUS_ERROR_CODES = frozenset("""
 LOTUS_ERROR LOTUS_FORMAT LOTUS_INVALID_ANSWER INTERNAL_ERROR
@@ -165,6 +177,8 @@ class LotusAnswerService:
         mime = response.headers.get("Content-Type", "").split(";", 1)[0].strip().casefold()
         if not mime.startswith("image/"):
             mime = mimetypes.guess_type(url)[0] or ""
+        if not mime.startswith("image/"):
+            mime = _sniff_image_mime(response.content)
         if not mime.startswith("image/"):
             raise ValueError("response is not an image")
         data = f"data:{mime};base64,{base64.b64encode(response.content).decode('ascii')}"

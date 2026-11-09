@@ -144,6 +144,22 @@ class LotusTests(unittest.TestCase):
             self.assertIs(service._attach_native_images(request), request)
             fetch.assert_not_called()
 
+    def test_octet_stream_image_uses_signature(self):
+        service = self.service()
+        response = Mock(
+            content=b'\x89PNG\r\n\x1a\nimage',
+            headers={'Content-Type': 'application/octet-stream'},
+        )
+        response.raise_for_status.return_value = None
+        session = Mock()
+        session.get.return_value = response
+        with patch('api.lotus_tiku.requests.Session', return_value=session), \
+             patch('api.lotus_tiku.use_cookies', return_value={}):
+            data = service._fetch_image_data(
+                'https://mooc1.chaoxing.com/ananas/latex/p/385111'
+            )
+        self.assertTrue(data.startswith('data:image/png;base64,'))
+
     def test_timeout_and_http_failures_do_not_duplicate_requests(self):
         for failure in (httpx.ReadTimeout('timeout'), httpx.Response(401, request=httpx.Request('POST', 'https://lotus.example/search')),
                         httpx.Response(200, json={'code': 0}, request=httpx.Request('POST', 'https://lotus.example/search'))):

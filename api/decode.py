@@ -788,6 +788,8 @@ def _rich_node_text(node, font_decoder=None) -> tuple[str, int, int]:
             source = str(element.get('src') or element.get('data-original') or '').strip()
             if source.startswith('//'):
                 source = 'https:' + source
+            elif source.startswith('/'):
+                source = 'https://mooc1.chaoxing.com' + source
             return f' [QUESTION_IMAGE:{source or "embedded"}] '
         if element.name in {'input', 'textarea'} or element.get('contenteditable') == 'true':
             if str(element.get('type') or 'text').lower() not in {'hidden', 'radio', 'checkbox', 'button', 'submit'}:
