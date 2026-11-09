@@ -116,6 +116,34 @@ class LotusTests(unittest.TestCase):
             with self.assertRaises(LotusQuestionError):
                 self.service().build_request({'type': 'single', 'title': 'test', **invalid})
 
+    def test_desktop_images_are_fetched_with_native_mapping(self):
+        service = self.service()
+        question = {
+            'type': 'single',
+            'title': '题干 [QUESTION_IMAGE:https://p.ananas.chaoxing.com/stem?a=1&b=2]',
+            'options': ['文字', '[QUESTION_IMAGE:https://p.ananas.chaoxing.com/option]'],
+        }
+        request = service.build_request(question)
+        with patch.object(service, '_fetch_image_data', side_effect=[
+            'data:image/png;base64,c3RlbQ==',
+            'data:image/png;base64,b3B0aW9u',
+        ]):
+            mapped = service._attach_native_images(request)
+        self.assertEqual(len(mapped['images']), 2)
+        self.assertIn('https://p.ananas.chaoxing.com/stem?a=1&amp;b=2', mapped['original_title'])
+        self.assertIn('[图片1]', mapped['suggestion_title'])
+        self.assertIn('[图片2]', mapped['suggestion_options'])
+        self.assertNotIn('https://p.ananas.chaoxing.com/option', mapped['suggestion_options'])
+
+    def test_existing_native_images_are_not_remapped(self):
+        service = self.service()
+        request = {'title': '<img src="https://x/private">', 'options': [],
+                   'images': ['data:image/png;base64,aGVsbG8='],
+                   'suggestion_title': '[图片1]'}
+        with patch.object(service, '_fetch_image_data') as fetch:
+            self.assertIs(service._attach_native_images(request), request)
+            fetch.assert_not_called()
+
     def test_timeout_and_http_failures_do_not_duplicate_requests(self):
         for failure in (httpx.ReadTimeout('timeout'), httpx.Response(401, request=httpx.Request('POST', 'https://lotus.example/search')),
                         httpx.Response(200, json={'code': 0}, request=httpx.Request('POST', 'https://lotus.example/search'))):

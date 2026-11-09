@@ -1,7 +1,9 @@
 """Client for the Lotus question bank's existing OCS /search endpoint."""
 from __future__ import annotations
 
+import base64
 import html
+import mimetypes
 import re
 import threading
 import time
@@ -10,13 +12,17 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
+import requests
 
+from api.config import GlobalConst as gc
+from api.cookies import use_cookies
 from api.logger import logger
 from api.response_ai import ResponseSite, _as_bool, question_cache_key
 
 DEFAULT_LOTUS_URL = "https://tiku.lotusshared.cn"
 ANSWER_BACKENDS = {"responses": "Responses AI", "lotus": "荷花题库"}
 _IMAGE = re.compile(r"\[QUESTION_IMAGE:([^\]]+)\]", re.IGNORECASE)
+_HTML_IMAGE = re.compile(r'<img\b[^>]*?\bsrc=["\']([^"\']+)["\']', re.IGNORECASE)
 _BLANK = re.compile(r"\[BLANK_\d+\]", re.IGNORECASE)
 
 
@@ -57,6 +63,8 @@ class LotusAnswerService:
         self.timeout = max(10.0, float(config.get("request_timeout_seconds") or 180))
         self.min_interval = max(0.0, float(config.get("min_interval_seconds") or 0))
         self._lock = threading.Lock()
+        self._image_lock = threading.RLock()
+        self._image_cache: dict[str, str] = {}
         self._last_request_time = None
         parsed = urlsplit(self.base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
@@ -141,6 +149,76 @@ class LotusAnswerService:
                     raise LotusQuestionError("原生图片映射必须保留原文和占位符文本")
         return request
 
+    def _fetch_image_data(self, url: str) -> str:
+        """Read a Chaoxing question image with the active account cookies."""
+        with self._image_lock:
+            cached = self._image_cache.get(url)
+            if cached:
+                return cached
+        session = requests.Session()
+        session.headers.update(gc.HEADERS)
+        session.cookies.update(use_cookies())
+        response = session.get(url, timeout=15)
+        response.raise_for_status()
+        if len(response.content) > 8 * 1024 * 1024:
+            raise ValueError("image too large")
+        mime = response.headers.get("Content-Type", "").split(";", 1)[0].strip().casefold()
+        if not mime.startswith("image/"):
+            mime = mimetypes.guess_type(url)[0] or ""
+        if not mime.startswith("image/"):
+            raise ValueError("response is not an image")
+        data = f"data:{mime};base64,{base64.b64encode(response.content).decode('ascii')}"
+        with self._image_lock:
+            self._image_cache[url] = data
+        return data
+
+    def _attach_native_images(self, request: dict) -> dict:
+        """Embed account-protected images using OCS's explicit native mapping."""
+        if request.get("images"):
+            return request
+        original_title = request.get("title", "")
+        original_options = list(request.get("options") or [])
+        sources = []
+        for value in (original_title, *original_options):
+            for match in _HTML_IMAGE.finditer(value):
+                source = html.unescape(match.group(1).strip())
+                host = (urlsplit(source).hostname or "").casefold()
+                if (
+                    source.startswith(("http://", "https://"))
+                    and (host == "chaoxing.com" or host.endswith(".chaoxing.com"))
+                    and source not in sources
+                ):
+                    sources.append(source)
+        if not sources:
+            return request
+
+        images: list[str] = []
+        replacements: dict[str, str] = {}
+        for source in sources:
+            try:
+                data = self._fetch_image_data(source)
+            except (requests.RequestException, OSError, ValueError) as error:
+                logger.warning("登录态图片读取失败，保留远端地址供题库尝试: {}", type(error).__name__)
+                continue
+            images.append(data)
+            replacements[source] = f"[图片{len(images)}]"
+        if not images:
+            return request
+
+        def replace(value: str) -> str:
+            for source, marker in replacements.items():
+                value = value.replace(source, marker).replace(html.escape(source, quote=True), marker)
+            return value
+
+        request.update({
+            "images": images,
+            "original_title": original_title,
+            "original_options": original_options,
+            "suggestion_title": replace(original_title),
+            "suggestion_options": "\n".join(replace(value) for value in original_options),
+        })
+        return request
+
     @staticmethod
     def parse_response(payload: Any, request: Mapping[str, Any]) -> Any:
         if not isinstance(payload, dict) or payload.get("code") != 1:
@@ -195,7 +273,7 @@ class LotusAnswerService:
     def answer(self, question: Mapping[str, Any], force_refresh: bool = False) -> Any | None:
         if not self.token or "\n" in self.token or "\r" in self.token:
             raise RuntimeError("请在全局设置填写荷花题库访问令牌")
-        request = self.build_request(question)
+        request = self._attach_native_images(self.build_request(question))
         # Invalidate answers cached before manual-only responses were rejected.
         cache_key = "lotus:v2:" + question_cache_key({**request, "native_type": question.get("type")}, self.site, "server-managed", "server-managed")
         if self.cache is not None and self.semantic_cache_enabled and not force_refresh:
