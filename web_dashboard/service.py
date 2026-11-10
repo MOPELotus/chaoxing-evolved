@@ -465,7 +465,9 @@ class DashboardService:
                         total_done += done
                         total_points += total
                         failed_pattern = re.escape(row["title"]) + r".*(?:\u6267\u884c\u5931\u8d25|ERROR|\u9519\u8bef)"
-                        if total and done == total:
+                        if not total:
+                            row["status"] = "unavailable"
+                        elif done == total:
                             row["status"] = "completed"
                         elif re.search(failed_pattern, signals["text"], re.I):
                             row["status"] = "failed"

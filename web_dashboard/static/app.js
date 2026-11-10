@@ -15,6 +15,7 @@ const initials = name => [...String(name || "?")].slice(-2).join("");
 const statusLabels = {
   running: "执行中", completed: "已完成", failed: "失败", executed: "执行过",
   queued: "等待执行", not_selected: "未选择", idle: "未运行", locked: "待解锁",
+  unavailable: "暂无章节",
   pending: "未执行", resource: "资源", pending_review: "待批阅", incomplete: "未完成",
   expired: "已过期", unknown: "状态未知"
 };
