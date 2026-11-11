@@ -56,7 +56,8 @@ def normalize_question_title(title: str) -> str:
 def answer_cache_key(question: dict) -> str:
     payload = {key: question.get(key) for key in (
         "title", "type", "options", "option_items", "material", "image_urls",
-        "material_image_urls", "matching_groups", "blank_count",
+        "material_image_urls", "matching_groups", "blank_count", "purpose",
+        "minimum_length",
     )}
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
     return "question-v2:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()

@@ -7,12 +7,13 @@ import secrets
 import re
 import threading
 import time
+import uuid
 from collections.abc import Mapping
 from difflib import SequenceMatcher
 from enum import Enum, IntEnum
 from hashlib import md5
 from typing import Self, Optional, Literal
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -650,6 +651,71 @@ def assemble_work_submission(form_data: Mapping) -> dict:
                 question["answerField"][f"answer{question_id}"] if use_answer else ""
             )
     return payload
+
+
+def decode_vote_form(page_html: str) -> tuple[list[dict], list[tuple[str, str]]]:
+    """Decode a chapter questionnaire without treating it as an exam."""
+    document = BeautifulSoup(page_html or "", "lxml")
+    form = document.select_one("form#formId") or document.find("form")
+    if form is None:
+        return [], []
+
+    questions = []
+    answer_names = set()
+    for box in form.select(".StudentTimu"):
+        id_node = box.select_one('input[name="questionId"]')
+        type_node = box.select_one('input[name="questionType"]')
+        question_id = str(id_node.get("value") or "").strip() if id_node else ""
+        try:
+            native_type = int(type_node.get("value")) if type_node else -1
+        except (TypeError, ValueError):
+            native_type = -1
+        if not question_id or native_type not in {0, 1, 4, 16}:
+            continue
+
+        title_node = box.select_one(".Timup")
+        title = title_node.get_text(" ", strip=True) if title_node else f"问卷第 {len(questions) + 1} 题"
+        inputs = box.select(f'input[name="answer{question_id}"]')
+        option_values = [str(node.get("value") or "").strip() for node in inputs]
+        option_items = []
+        for node, value in zip(inputs, option_values):
+            container = node.find_parent(class_=re.compile(r"(?:TxAnswer|answer)")) or node.parent
+            label = container.get_text(" ", strip=True) if container else value
+            label = re.sub(rf"^\s*{re.escape(value)}\s*[：:]\s*", "", label).strip()
+            option_items.append(label or value)
+
+        if native_type == 1:
+            question_type = "multiple"
+        elif native_type in {0, 16}:
+            question_type = "single"
+        else:
+            question_type = "shortanswer"
+        minimum, maximum = (1, len(option_values))
+        limit_node = box.select_one(".answer_limit")
+        limit_match = re.search(r"(\d+)\s*,\s*(\d+)", limit_node.get_text() if limit_node else "")
+        if limit_match:
+            minimum, maximum = map(int, limit_match.groups())
+        questions.append({
+            "id": question_id,
+            "native_type": native_type,
+            "type": question_type,
+            "title": title,
+            "options": option_items,
+            "option_items": option_items,
+            "option_values": option_values,
+            "minimum_choices": minimum,
+            "maximum_choices": maximum,
+            "purpose": "survey",
+        })
+        answer_names.add(f"answer{question_id}")
+
+    payload = []
+    for node in form.select("input[name]"):
+        name = str(node.get("name") or "")
+        if not name or name in answer_names or str(node.get("type") or "").lower() in {"file", "radio", "checkbox"}:
+            continue
+        payload.append((name, str(node.get("value") or "")))
+    return questions, payload
 
 
 class Chaoxing:
@@ -1382,6 +1448,228 @@ class Chaoxing:
             return StudyResult.ERROR
         else:
             return StudyResult.SUCCESS
+
+    def study_vote(self, _course, _job, _job_info) -> StudyResult:
+        """Complete a chapter questionnaire using survey-specific AI prompts."""
+        if not self.tiku or self.tiku.DISABLE:
+            logger.warning("问卷需要可用的 AI 答题服务，已保留为未完成")
+            return StudyResult.ERROR
+        active_id = str(_job.get("activeid") or "").strip()
+        if not active_id or not _job.get("jobid") or not _job.get("jtoken"):
+            logger.warning("问卷缺少 activeId/jobid/jtoken，停止提交")
+            return StudyResult.ERROR
+
+        session = SessionManager.get_session()
+        page = session.get(
+            "https://mobilelearn.chaoxing.com/widget/chaptervote/goChapterSubmit",
+            params={
+                "activeId": active_id,
+                "quessequence": 1,
+                "courseId": _course["courseId"],
+                "isjob": "true",
+                "ut": "s",
+            },
+            timeout=30,
+        )
+        if page.status_code != 200 or self._is_captcha_response(page):
+            logger.warning("问卷页面读取失败: HTTP {}", page.status_code)
+            return StudyResult.ERROR
+        questions, payload = decode_vote_form(page.text)
+        if not questions:
+            completed_text = BeautifulSoup(page.text, "lxml").get_text(" ", strip=True)
+            if any(marker in completed_text for marker in ("已提交", "查看结果", "投票结果", "问卷结果")):
+                return StudyResult.SUCCESS
+            logger.warning("问卷页面没有可识别的题目")
+            return StudyResult.ERROR
+
+        answers = self.tiku.query_all(
+            questions,
+            query_delay=float(self.kwargs.get("query_delay", 0) or 0),
+            force_refresh=True,
+        )
+        if not isinstance(answers, list) or len(answers) != len(questions):
+            logger.warning("问卷 AI 返回数量不匹配，停止提交")
+            return StudyResult.ERROR
+
+        answered = 0
+        for question, answer in zip(questions, answers):
+            field = f"answer{question['id']}"
+            if question["type"] == "shortanswer":
+                text = submission_answer(answer, question).strip()
+                if not text:
+                    logger.warning("问卷简答题未获得有效回答: {}", question["title"])
+                    return StudyResult.ERROR
+                payload.append((field, text))
+            else:
+                letters = map_choice_answer(
+                    submission_answer(answer, question),
+                    question["option_items"],
+                    multiple=question["type"] == "multiple",
+                )
+                if not letters:
+                    logger.warning("问卷选择题答案无法映射到原选项: {}", question["title"])
+                    return StudyResult.ERROR
+                indices = [ord(letter) - ord("A") for letter in letters]
+                if question["type"] == "multiple":
+                    minimum = max(1, question["minimum_choices"])
+                    maximum = max(minimum, min(question["maximum_choices"], len(question["option_values"])))
+                    for index in range(len(question["option_values"])):
+                        if len(indices) >= minimum:
+                            break
+                        if index not in indices:
+                            indices.append(index)
+                    indices = sorted(dict.fromkeys(indices))[:maximum]
+                elif len(indices) != 1:
+                    return StudyResult.ERROR
+                for index in indices:
+                    if not 0 <= index < len(question["option_values"]):
+                        return StudyResult.ERROR
+                    payload.append((field, question["option_values"][index]))
+            answered += 1
+
+        def replace(name: str, value: str) -> None:
+            nonlocal payload
+            payload = [(key, item) for key, item in payload if key != name]
+            payload.append((name, value))
+
+        replace("courseId", str(_course["courseId"]))
+        replace("classId", str(_course["clazzId"]))
+        replace("activeId", active_id)
+        replace("doquescount", str(answered))
+        replace("preventsubmit", "0")
+        submitted = session.post(
+            "https://mobilelearn.chaoxing.com/widget/pcvote/doQuestion",
+            data=payload,
+            headers={"Referer": page.url, "X-Requested-With": "XMLHttpRequest"},
+            timeout=30,
+        )
+        try:
+            accepted = submitted.status_code == 200 and submitted.json().get("isresult") in {0, 1}
+        except ValueError:
+            accepted = False
+        if not accepted:
+            logger.warning("问卷提交失败: HTTP {}", submitted.status_code)
+            return StudyResult.ERROR
+
+        finished = session.get(
+            "https://mooc1.chaoxing.com/mooc-ans/job/vote",
+            params={
+                "jobid": _job["jobid"],
+                "knowledgeid": _job_info["knowledgeid"],
+                "courseid": _course["courseId"],
+                "clazzid": _course["clazzId"],
+                "jtoken": _job["jtoken"],
+                "checkMicroTopic": "true",
+                "microTopicId": _job.get("microTopicId", 0),
+            },
+            headers={"Referer": page.url},
+            timeout=30,
+        )
+        try:
+            status = finished.status_code == 200 and bool(finished.json().get("status"))
+        except ValueError:
+            status = False
+        if not status:
+            logger.warning("问卷已提交，但任务点完成确认失败")
+            return StudyResult.ERROR
+        logger.info("问卷任务完成: {}", _job.get("title", "问卷"))
+        return StudyResult.SUCCESS
+
+    def study_discussion(self, _course, _job, _job_info) -> StudyResult:
+        """Post one qualifying reply for a required chapter discussion."""
+        if not self.tiku or self.tiku.DISABLE:
+            logger.warning("讨论需要可用的 AI 答题服务，已保留为未完成")
+            return StudyResult.ERROR
+        if not _job.get("mid") or not _job.get("jobid"):
+            logger.warning("讨论缺少 mid/jobid，停止提交")
+            return StudyResult.ERROR
+        try:
+            minimum_length = max(1, int(_job.get("replywordnum") or 1))
+        except (TypeError, ValueError):
+            minimum_length = 1
+        prompt = "\n".join(part for part in (_job.get("title", ""), _job.get("detail", "")) if part)
+        question = {
+            "type": "shortanswer",
+            "title": prompt or "请围绕课程主题发表看法",
+            "purpose": "discussion",
+            "minimum_length": minimum_length,
+        }
+        answers = self.tiku.query_all(
+            [question],
+            query_delay=float(self.kwargs.get("query_delay", 0) or 0),
+            force_refresh=True,
+        )
+        content = submission_answer(answers[0], question).strip() if answers else ""
+        if not content:
+            logger.warning("讨论未获得有效回复，停止提交")
+            return StudyResult.ERROR
+        supplement = "我会把这些认识落实到日常学习和实践中，并根据实际反馈不断调整、总结和改进。"
+        while len(re.sub(r"\s+", "", content)) < minimum_length:
+            content = f"{content} {supplement}"
+
+        session = SessionManager.get_session()
+        chapter = session.get(
+            "https://mooc1.chaoxing.com/mooc-ans/bbscircle/chapter",
+            params={
+                "mtopicid": _job["mid"],
+                "jobid": _job["jobid"],
+                "isPortal": "false",
+                "knowledgeid": _job_info["knowledgeid"],
+                "ut": "s",
+                "clazzId": _course["clazzId"],
+                "enc": _job.get("enc", ""),
+                "courseid": _course["courseId"],
+                "isJob": "true",
+            },
+            timeout=30,
+        )
+        document = BeautifulSoup(chapter.text, "lxml")
+        topic_node = document.select_one("#topicMainDiv[data]")
+        topic_url = urljoin(chapter.url, topic_node.get("data")) if topic_node else ""
+        if chapter.status_code != 200 or not topic_url:
+            logger.warning("讨论详情入口读取失败")
+            return StudyResult.ERROR
+        topic_page = session.get(topic_url, timeout=30)
+        topic_match = re.search(r"\btopic\s*:\s*(\{.*?\})\s*,\s*course\s*:", topic_page.text, re.DOTALL)
+        token_match = re.search(r"\burlToken\s*:\s*['\"]([^'\"]+)['\"]", topic_page.text)
+        if topic_page.status_code != 200 or not topic_match or not token_match:
+            logger.warning("讨论页面参数解析失败")
+            return StudyResult.ERROR
+        try:
+            topic = json.loads(topic_match.group(1))
+        except ValueError:
+            logger.warning("讨论主题数据不是有效 JSON")
+            return StudyResult.ERROR
+        topic_uuid = str(topic.get("uuid") or "")
+        bbsid = str(topic.get("bbsid") or "")
+        if not topic_uuid or not bbsid:
+            return StudyResult.ERROR
+        response = session.post(
+            urljoin(topic_url, f"/pc/invitation/{topic_uuid}/addReplys"),
+            data={
+                "courseId": _course["courseId"],
+                "classId": _course["clazzId"],
+                "replyId": -1,
+                "uuid": str(uuid.uuid4()),
+                "topic_content": quote(content, safe=""),
+                "files_url": "",
+                "files_attr": "",
+                "anonymous": "",
+                "urlToken": token_match.group(1),
+                "bbsid": bbsid,
+            },
+            headers={"Referer": topic_url, "X-Requested-With": "XMLHttpRequest"},
+            timeout=30,
+        )
+        try:
+            accepted = response.status_code == 200 and bool(response.json().get("status"))
+        except ValueError:
+            accepted = False
+        if not accepted:
+            logger.warning("讨论回复提交失败: HTTP {}", response.status_code)
+            return StudyResult.ERROR
+        logger.info("讨论任务完成: {}", _job.get("title", "讨论"))
+        return StudyResult.SUCCESS
 
     def study_work(self, _course, _job, _job_info, force_ai_refresh: bool = False) -> StudyResult:
         config = getattr(self.tiku, "_conf", {}) or {}

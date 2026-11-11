@@ -59,6 +59,17 @@ class LotusTests(unittest.TestCase):
         self.assertEqual(wire['blankCount'], 1)
         self.assertEqual(wire['type'], 'completion')
 
+    def test_survey_and_discussion_purpose_reach_adapter(self):
+        survey = self.service().build_request({
+            'type': 'single', 'title': 'Preference', 'options': ['One', 'Two'], 'purpose': 'survey'
+        })
+        discussion = self.service().build_request({
+            'type': 'shortanswer', 'title': 'Discuss', 'purpose': 'discussion', 'minimum_length': 80
+        })
+        self.assertEqual(survey['purpose'], 'survey')
+        self.assertEqual(discussion['purpose'], 'discussion')
+        self.assertEqual(discussion['minimumLength'], 80)
+
     def test_invalid_answers_and_business_failures(self):
         wire = {'type': 'single', 'options': ['A', 'B']}
         for payload in ({'code': 0, 'error': 'ADAPTER_FAILED'}, {'code': 1, 'answers': ['C']},

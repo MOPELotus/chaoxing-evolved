@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from api.decode import decode_course_card
-from api.base import Chaoxing, SessionManager, StudyResult
+from api.base import Chaoxing, SessionManager, StudyResult, decode_vote_form
 from api.json_store import DEFAULT_PROFILE
 from api.study_runner import ChapterResult, _normalize_common_config, process_chapter
 
@@ -71,6 +71,88 @@ class NonTaskTests(unittest.TestCase):
         jobs, info = decode_course_card(page, include_non_task=True)
         self.assertEqual(jobs, [])
         self.assertEqual(info['unsupported_non_task'], [{'module': 'insertbbs', 'title': 'Discussion'}])
+
+    def test_required_survey_and_discussion_are_executable_jobs(self):
+        cards = [
+            {'type': 'vote', 'job': True, 'jobid': 'vote-job', 'jtoken': 'vote-token',
+             'property': {'module': 'insertvote', 'id': 'active-1', 'title': 'Survey'}},
+            {'job': True, 'jobid': 'bbs-job', 'mid': 'topic-1',
+             'property': {'module': 'insertbbs', 'title': 'Discussion', 'replywordnum': '50'}},
+        ]
+        page = self.page(cards) + (
+            '<iframe module="insertbbs" data=\'{"jobid":"bbs-job","detail":"Discuss this topic"}\'></iframe>'
+        )
+        jobs, _ = decode_course_card(page)
+        self.assertEqual([job['type'] for job in jobs], ['vote', 'discussion'])
+        self.assertEqual(jobs[0]['activeid'], 'active-1')
+        self.assertEqual(jobs[1]['detail'], 'Discuss this topic')
+        self.assertEqual(jobs[1]['replywordnum'], '50')
+
+    def test_vote_form_keeps_native_values_and_marks_survey_prompt(self):
+        html = '''<form id="formId">
+          <div class="StudentTimu"><input name="questionId" value="1"><input name="questionType" value="0">
+            <p class="Timup">Choose one</p><div class="TxAnswer"><input type="radio" name="answer1" value="X"><p>X：First</p></div>
+            <div class="TxAnswer"><input type="radio" name="answer1" value="Y"><p>Y：Second</p></div></div>
+          <div class="StudentTimu"><input name="questionId" value="2"><input name="questionType" value="4">
+            <p class="Timup">Explain</p><textarea name="answer2"></textarea></div>
+          <input name="activeId" value="99"><input name="doquescount" value="0">
+        </form>'''
+        questions, payload = decode_vote_form(html)
+        self.assertEqual([question['type'] for question in questions], ['single', 'shortanswer'])
+        self.assertEqual(questions[0]['option_values'], ['X', 'Y'])
+        self.assertEqual(questions[0]['option_items'], ['First', 'Second'])
+        self.assertTrue(all(question['purpose'] == 'survey' for question in questions))
+        self.assertIn(('activeId', '99'), payload)
+
+    def test_vote_submission_uses_ai_and_confirms_task_point(self):
+        client = Chaoxing()
+        client.tiku = Mock(DISABLE=False)
+        client.tiku.query_all.return_value = ['B', 'A natural first-person response']
+        page = Mock(status_code=200, url='https://mobilelearn.chaoxing.com/vote', text='''<form id="formId">
+          <div class="StudentTimu"><input name="questionId" value="1"><input name="questionType" value="0">
+            <p class="Timup">Preference</p><div class="TxAnswer"><input type="radio" name="answer1" value="A"><p>A：One</p></div>
+            <div class="TxAnswer"><input type="radio" name="answer1" value="B"><p>B：Two</p></div></div>
+          <div class="StudentTimu"><input name="questionId" value="2"><input name="questionType" value="4">
+            <p class="Timup">Why</p><textarea name="answer2"></textarea></div>
+          <input name="activeId" value="99"><input name="doquescount" value="0">
+        </form>''')
+        finished = Mock(status_code=200)
+        finished.json.return_value = {'status': True}
+        submitted = Mock(status_code=200)
+        submitted.json.return_value = {'isresult': 1}
+        session = Mock()
+        session.get.side_effect = [page, finished]
+        session.post.return_value = submitted
+        course = {'courseId': 'course', 'clazzId': 'class'}
+        job = {'activeid': '99', 'jobid': 'vote-job', 'jtoken': 'token', 'title': 'Survey'}
+        info = {'knowledgeid': 'point'}
+        with patch.object(SessionManager, 'get_session', return_value=session):
+            self.assertEqual(client.study_vote(course, job, info), StudyResult.SUCCESS)
+        sent = session.post.call_args.kwargs['data']
+        self.assertIn(('answer1', 'B'), sent)
+        self.assertIn(('answer2', 'A natural first-person response'), sent)
+        self.assertTrue(client.tiku.query_all.call_args.kwargs['force_refresh'])
+
+    def test_discussion_submission_uses_dedicated_prompt_and_minimum_length(self):
+        client = Chaoxing()
+        client.tiku = Mock(DISABLE=False)
+        client.tiku.query_all.return_value = ['My view']
+        chapter = Mock(status_code=200, url='https://mooc1.chaoxing.com/chapter',
+                       text='<div id="topicMainDiv" data="https://groupweb.chaoxing.com/topic"></div>')
+        topic = Mock(status_code=200, text='''<script>window.obj={topic:{"uuid":"topic-id","bbsid":"bbs-id"},course:{},urlToken:'token'};</script>''')
+        posted = Mock(status_code=200)
+        posted.json.return_value = {'status': True}
+        session = Mock()
+        session.get.side_effect = [chapter, topic]
+        session.post.return_value = posted
+        course = {'courseId': 'course', 'clazzId': 'class'}
+        job = {'mid': 'mid', 'jobid': 'job', 'title': 'Discuss', 'detail': 'Details', 'replywordnum': 50}
+        with patch.object(SessionManager, 'get_session', return_value=session):
+            self.assertEqual(client.study_discussion(course, job, {'knowledgeid': 'point'}), StudyResult.SUCCESS)
+        question = client.tiku.query_all.call_args.args[0][0]
+        self.assertEqual(question['purpose'], 'discussion')
+        self.assertEqual(question['minimum_length'], 50)
+        self.assertGreaterEqual(len(session.post.call_args.kwargs['data']['topic_content']), 50)
 
     def test_non_task_document_previews_without_claiming_completion(self):
         client = Chaoxing()

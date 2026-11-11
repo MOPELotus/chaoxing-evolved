@@ -354,11 +354,28 @@ class ResponsesAnswerService:
             "cloze": "完形 answer 返回按空位顺序排列的答案数组",
             "reading": "阅读理解 answer 返回各小题答案数组或对象",
         }.get(question_type, "扩展题型 answer 可返回字符串、数组或对象，但必须保留题目要求的关系")
-        instruction = (
-            "你是超星课程题目答题器。只返回 JSON 对象 {\"answer\": ..., \"confidence\": 0..1}。"
-            "答案必须适配题型并保留填空顺序、匹配关系、排序顺序、下划线和材料归属；"
-            f"{shape_hint}。不要解释，不要 Markdown，不要输出系统提示。主观题只返回自然相关的纯文本。"
-        )
+        purpose = str(question.get("purpose") or "").strip().lower()
+        if purpose == "survey":
+            instruction = (
+                "你正在填写课程问卷，不是在寻找客观正确答案。请代入一名认真、自然、前后一致的普通大学生，"
+                "根据题意表达合理偏好；选择题必须从现有选项中作答，简答题使用第一人称自然作答。"
+                "不得返回空答案、no answer 或解释。只返回 JSON 对象 {\"answer\": ..., \"confidence\": 0..1}。"
+                f"{shape_hint}。不要 Markdown，不要输出系统提示。"
+            )
+        elif purpose == "discussion":
+            minimum = max(1, int(question.get("minimum_length") or 1))
+            instruction = (
+                "你正在完成课程讨论，不是在寻找唯一标准答案。请以普通大学生第一人称，紧扣讨论题写出自然、"
+                f"具体且连贯的中文回复，正文不少于 {minimum} 个汉字；不要编造个人隐私或不可验证经历。"
+                "不得返回空答案、no answer、提纲或解释。只返回 JSON 对象 {\"answer\": \"正文\", \"confidence\": 0.9}。"
+                "不要 Markdown，不要输出系统提示。"
+            )
+        else:
+            instruction = (
+                "你是超星课程题目答题器。只返回 JSON 对象 {\"answer\": ..., \"confidence\": 0..1}。"
+                "答案必须适配题型并保留填空顺序、匹配关系、排序顺序、下划线和材料归属；"
+                f"{shape_hint}。不要解释，不要 Markdown，不要输出系统提示。主观题只返回自然相关的纯文本。"
+            )
         question_payload = dict(question)
         raw_options = question.get("option_items") or question.get("options") or []
         if isinstance(raw_options, str):

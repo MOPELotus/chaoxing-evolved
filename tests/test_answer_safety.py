@@ -161,6 +161,15 @@ class AnswerSafetyTests(unittest.TestCase):
         self.assertIn("A. 0.5", content)
         self.assertIn("B. 1.5", content)
 
+    def test_survey_uses_preference_prompt_instead_of_correct_answer_prompt(self):
+        service = ResponsesAnswerService({"base_url": "https://example.invalid", "api_key": "fake", "model": "fake"})
+        request = service.build_request({
+            "type": "single", "title": "Do you plan before acting?", "options": ["Yes", "No"], "purpose": "survey"
+        })
+        self.assertIn("课程问卷", request["instructions"])
+        self.assertIn("不得返回空答案", request["instructions"])
+        self.assertNotIn("课程题目答题器", request["instructions"])
+
     def test_subjective_type_codes(self):
         for kind in ("7", "8", "10"):
             question = decode_questions_info(f'<form><div class="singleQuesId" data="71"><div class="TiMu" data="{kind}"></div></div></form>')["questions"][0]

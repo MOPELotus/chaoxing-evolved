@@ -132,6 +132,12 @@ class LotusAnswerService:
                 title += "\n补充题干图片：" + attachment
                 located += attachment
         request = {"type": wire_type, "title": title, "options": options}
+        purpose = str(question.get("purpose") or "").strip().lower()
+        if purpose in {"survey", "discussion"}:
+            request["purpose"] = purpose
+        minimum_length = question.get("minimum_length")
+        if isinstance(minimum_length, int) and minimum_length > 0:
+            request["minimumLength"] = minimum_length
         if wire_type == "completion":
             count = 1 if qtype != "completion" else question.get("blank_count", question.get("blankCount"))
             if count is None:

@@ -236,6 +236,14 @@ def process_job(
             return StudyResult.SKIPPED
         return chaoxing.study_work(course, job, job_info, force_ai_refresh=challenge_attempt > 0)
 
+    if job["type"] == "vote":
+        logger.trace(f"识别到问卷任务, 任务章节: {course['title']}")
+        return chaoxing.study_vote(course, job, job_info)
+
+    if job["type"] == "discussion":
+        logger.trace(f"识别到讨论任务, 任务章节: {course['title']}")
+        return chaoxing.study_discussion(course, job, job_info)
+
     if job["type"] == "read":
         logger.trace(f"识别到阅读任务, 任务章节: {course['title']}")
         result = chaoxing.study_read(course, job, job_info)
@@ -518,7 +526,7 @@ def process_chapter(
     # cases enter the existing retry/AI-refresh path instead of being reported
     # as locally successful.
     requires_confirmation = is_challenge_point(point) or any(
-        job.get("type") in {"live", "workid", "read"} for job in jobs
+        job.get("type") in {"live", "workid", "read", "vote", "discussion"} for job in jobs
     )
     if not requires_confirmation:
         return ChapterResult.SUCCESS

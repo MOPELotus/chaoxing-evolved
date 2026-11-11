@@ -200,6 +200,24 @@ def decode_course_card(html_text: str, include_non_task: bool = False) -> Tuple[
 
     # 处理所有附件任务
     cards = cards_data.get("attachments", [])
+    # Discussion cards keep their description in the iframe while the task
+    # attachment only exposes the identifiers and reply limits.  Merge the
+    # non-conflicting iframe fields so the runner can build a useful prompt.
+    frame_properties = {}
+    for frame in BeautifulSoup(html_text, "lxml").select("iframe[module][data]"):
+        try:
+            properties = json.loads(frame.get("data") or "{}")
+        except (ValueError, TypeError):
+            continue
+        identity = properties.get("jobid") or properties.get("_jobid") or properties.get("mid")
+        if identity:
+            frame_properties[str(identity)] = properties
+    for card in cards:
+        properties = card.get("property") if isinstance(card.get("property"), dict) else {}
+        identity = card.get("jobid") or properties.get("jobid") or properties.get("_jobid") or card.get("mid")
+        supplemental = frame_properties.get(str(identity))
+        if supplemental:
+            card["property"] = {**supplemental, **properties}
     job_list = _process_attachment_cards(cards, include_non_task=include_non_task)
     if include_non_task:
         pending = {}
@@ -350,6 +368,10 @@ def _process_attachment_cards(cards: List[Dict[str, Any]], include_non_task: boo
             work_job = _process_work_task(card)
             if work_job:
                 job_list.append(work_job)
+        elif card_type == "vote" or property_data.get("module") == "insertvote":
+            job_list.append(_process_vote_task(card))
+        elif property_data.get("module") == "insertbbs":
+            job_list.append(_process_discussion_task(card))
         else:
             if card.get("job") is not False:
                 logger.warning("Unknown card type: {}", card_type)
@@ -359,6 +381,39 @@ def _process_attachment_cards(cards: List[Dict[str, Any]], include_non_task: boo
                 job["non_task"] = True
 
     return job_list
+
+
+def _process_vote_task(card: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract a required chapter questionnaire task."""
+    properties = card.get("property", {}) if isinstance(card.get("property"), dict) else {}
+    return {
+        "type": "vote",
+        "jobid": card.get("jobid") or properties.get("jobid") or properties.get("_jobid", ""),
+        "jtoken": card.get("jtoken", ""),
+        "enc": card.get("enc", ""),
+        "mid": card.get("mid") or properties.get("mid", ""),
+        "aid": card.get("aid", ""),
+        "activeid": properties.get("id", ""),
+        "title": properties.get("title", "问卷"),
+        "property": properties,
+    }
+
+
+def _process_discussion_task(card: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract a required chapter discussion task."""
+    properties = card.get("property", {}) if isinstance(card.get("property"), dict) else {}
+    return {
+        "type": "discussion",
+        "jobid": card.get("jobid") or properties.get("jobid") or properties.get("_jobid", ""),
+        "enc": card.get("enc", ""),
+        "mid": card.get("mid") or properties.get("mid", ""),
+        "aid": card.get("aid", ""),
+        "title": properties.get("title", "讨论"),
+        "detail": properties.get("detail", ""),
+        "replywordnum": properties.get("replywordnum", 0),
+        "replytimes": properties.get("replytimes", 1),
+        "property": properties,
+    }
 
 
 def _process_live_task(card: Dict[str, Any]) -> Optional[Dict[str, Any]]:
