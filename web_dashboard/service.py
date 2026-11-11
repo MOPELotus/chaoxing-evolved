@@ -24,6 +24,9 @@ ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 PROFILE_RE = re.compile(r"--desktop-worker\s+(?:'([^']+)'|\"([^\"]+)\"|(\S+))")
 SKIP_PROFILE_PREFIXES = ("repair-",)
 SCHOOL_FALLBACKS = {"170121": "\u5c71\u897f\u519c\u4e1a\u5927\u5b66"}
+ACCEPTED_COURSE_GAPS = {
+    "\u7ba1\u7406\u5b66\u539f\u7406\uff08\u4ea4\u53c9\u901a\u8bc6\u8bfe\uff09": {"platform_done": 26, "total": 29},
+}
 
 
 @dataclass(frozen=True)
@@ -56,6 +59,14 @@ def normalize_status(raw: str) -> str:
     if any(mark in text for mark in ("\u8fdb\u884c\u4e2d", "\u4f5c\u7b54\u4e2d")):
         return "running"
     return "unknown"
+
+
+def accepted_course_gap(title: str, done: int, total: int) -> int:
+    """Return the number of explicitly accepted platform-only gaps."""
+    rule = ACCEPTED_COURSE_GAPS.get(title)
+    if not rule or total != rule["total"] or done < rule["platform_done"]:
+        return 0
+    return max(0, total - done)
 
 
 def parse_assessment_html(html: str, kind: str) -> list[dict[str, str]]:
@@ -459,8 +470,18 @@ class DashboardService:
                                 }
                             )
                         total = len(chapters)
+                        platform_done = done
+                        accepted = accepted_course_gap(row["title"], platform_done, total)
+                        done = min(total, platform_done + accepted)
                         percent = round(done * 100 / total, 1) if total else 0
                         row["progress"] = {"done": done, "total": total, "percent": percent}
+                        if accepted:
+                            row["platform_progress"] = {
+                                "done": platform_done,
+                                "total": total,
+                                "percent": round(platform_done * 100 / total, 1),
+                            }
+                            row["accepted_incomplete"] = accepted
                         row["chapters"] = chapters
                         total_done += done
                         total_points += total

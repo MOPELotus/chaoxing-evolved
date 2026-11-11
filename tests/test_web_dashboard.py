@@ -3,10 +3,23 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from web_dashboard.service import DashboardService, normalize_status, parse_assessment_html, parse_school, parse_task_cards
+from web_dashboard.service import (
+    DashboardService,
+    accepted_course_gap,
+    normalize_status,
+    parse_assessment_html,
+    parse_school,
+    parse_task_cards,
+)
 
 
 class DashboardParsingTests(unittest.TestCase):
+    def test_accepts_only_the_three_known_management_gaps(self):
+        title = "\u7ba1\u7406\u5b66\u539f\u7406\uff08\u4ea4\u53c9\u901a\u8bc6\u8bfe\uff09"
+        self.assertEqual(accepted_course_gap(title, 26, 29), 3)
+        self.assertEqual(accepted_course_gap(title, 25, 29), 0)
+        self.assertEqual(accepted_course_gap("\u5176\u4ed6\u8bfe\u7a0b", 26, 29), 0)
+
     def test_normalize_assessment_states(self):
         self.assertEqual(normalize_status("已完成"), "completed")
         self.assertEqual(normalize_status("已提交，待批阅"), "pending_review")
