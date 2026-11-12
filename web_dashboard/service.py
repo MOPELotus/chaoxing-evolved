@@ -27,6 +27,27 @@ SCHOOL_FALLBACKS = {"170121": "\u5c71\u897f\u519c\u4e1a\u5927\u5b66"}
 ACCEPTED_COURSE_GAPS = {
     "\u7ba1\u7406\u5b66\u539f\u7406\uff08\u4ea4\u53c9\u901a\u8bc6\u8bfe\uff09": {"platform_done": 26, "total": 29},
 }
+ASSESSMENT_COURSE_DELAY_SECONDS = 1.25
+ASSESSMENT_RETRY_DELAYS = (5.0, 15.0)
+
+
+class AssessmentRateLimitError(RuntimeError):
+    """The assessment list was redirected to a verification/rate-limit page."""
+
+
+def assessment_response_is_limited(response: Any) -> bool:
+    url = str(getattr(response, "url", "") or "").lower()
+    status = int(getattr(response, "status_code", 0) or 0)
+    text = str(getattr(response, "text", "") or "").lower()
+    return (
+        status in {403, 429}
+        or "antispider" in url
+        or "showverify" in url
+        or "antispider" in text
+        or "showverify" in text
+        or "访问频繁" in text
+        or "操作频繁" in text
+    )
 
 
 @dataclass(frozen=True)
@@ -590,7 +611,12 @@ class DashboardService:
                 if any(profile_selects(profile, course) for profile in profiles)
             ]
             rows: list[dict[str, Any]] = []
-            for course in selected_courses:
+            for index, course in enumerate(selected_courses):
+                # Assessment endpoints are more sensitive than chapter APIs.
+                # Keep all reads serial and add a small inter-course pause so
+                # a large selected-course set does not trip verification.
+                if index:
+                    time.sleep(ASSESSMENT_COURSE_DELAY_SECONDS)
                 try:
                     items = self._assessment_course(client, course, kind)
                     rows.append({"course_key": course_key(course), "course": course["title"], "items": items})
@@ -615,6 +641,24 @@ class DashboardService:
             return copy.deepcopy(result)
 
     def _assessment_course(self, client: Chaoxing, course: dict[str, Any], kind: str) -> list[dict[str, str]]:
+        for attempt in range(len(ASSESSMENT_RETRY_DELAYS) + 1):
+            try:
+                return self._assessment_course_once(client, course, kind)
+            except AssessmentRateLimitError:
+                if attempt >= len(ASSESSMENT_RETRY_DELAYS):
+                    raise
+                delay = ASSESSMENT_RETRY_DELAYS[attempt]
+                logger.warning(
+                    "作业/考试读取触发平台限制：{}；降频等待 {} 秒后重读（{}/{}）",
+                    course.get("title", ""),
+                    delay,
+                    attempt + 1,
+                    len(ASSESSMENT_RETRY_DELAYS),
+                )
+                time.sleep(delay)
+        raise AssertionError("unreachable")
+
+    def _assessment_course_once(self, client: Chaoxing, course: dict[str, Any], kind: str) -> list[dict[str, str]]:
         session = SessionManager.get_session()
         middle = session.get(
             "https://mooc1.chaoxing.com/visit/stucoursemiddle",
@@ -627,6 +671,8 @@ class DashboardService:
             },
             timeout=25,
         )
+        if assessment_response_is_limited(middle):
+            raise AssessmentRateLimitError("课程入口被平台限流")
         middle.raise_for_status()
         soup = BeautifulSoup(middle.text, "lxml")
 
@@ -655,5 +701,7 @@ class DashboardService:
                 "openc": value("openc"),
             }
         response = session.get(url, params=params, timeout=25)
+        if assessment_response_is_limited(response):
+            raise AssessmentRateLimitError("作业/考试列表被平台限流")
         response.raise_for_status()
         return parse_assessment_html(response.text, kind)

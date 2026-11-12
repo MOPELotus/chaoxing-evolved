@@ -4,8 +4,10 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from web_dashboard.service import (
+    AssessmentRateLimitError,
     DashboardService,
     accepted_course_gap,
+    assessment_response_is_limited,
     normalize_status,
     parse_assessment_html,
     parse_school,
@@ -14,6 +16,30 @@ from web_dashboard.service import (
 
 
 class DashboardParsingTests(unittest.TestCase):
+    def test_detects_assessment_verification_redirects(self):
+        response = type(
+            "Response",
+            (),
+            {"url": "https://mooc1.chaoxing.com/antispiderShowVerify.ac", "status_code": 404, "text": ""},
+        )()
+        self.assertTrue(assessment_response_is_limited(response))
+
+    def test_retries_rate_limited_assessment_reads_after_backoff(self):
+        with TemporaryDirectory() as directory:
+            service = DashboardService(Path(directory))
+            with (
+                patch.object(
+                    service,
+                    "_assessment_course_once",
+                    side_effect=[AssessmentRateLimitError("limited"), [{"title": "done"}]],
+                ) as read,
+                patch("web_dashboard.service.time.sleep") as sleep,
+            ):
+                result = service._assessment_course(object(), {"title": "Course"}, "homework")
+            self.assertEqual(result, [{"title": "done"}])
+            self.assertEqual(read.call_count, 2)
+            sleep.assert_called_once_with(5.0)
+
     def test_accepts_only_the_three_known_management_gaps(self):
         title = "\u7ba1\u7406\u5b66\u539f\u7406\uff08\u4ea4\u53c9\u901a\u8bc6\u8bfe\uff09"
         self.assertEqual(accepted_course_gap(title, 26, 29), 3)
