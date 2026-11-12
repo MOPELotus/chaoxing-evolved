@@ -62,7 +62,35 @@ class Live:
         try:
             response = session.get(status_url, headers=self.headers, timeout=10)
             response.raise_for_status()
-            return json.loads(response.text)  # 返回包含总时长的状态字典
+            payload = self._decode_json_layers(response.text)
+            if not isinstance(payload, dict):
+                logger.error("直播状态响应不是有效对象")
+                return None
+
+            # Older insertlive cards may wrap ``temp`` or ``temp.data`` in
+            # one or more JSON strings.  Normalize those layers here so the
+            # processor can consume both current and legacy response shapes.
+            temp = self._decode_json_layers(payload.get("temp"))
+            if isinstance(temp, dict):
+                temp = dict(temp)
+                temp["data"] = self._decode_json_layers(temp.get("data"))
+                payload["temp"] = temp
+            return payload
         except Exception as e:
             logger.error(f"获取直播状态失败: {str(e)}")
             return None
+
+    @staticmethod
+    def _decode_json_layers(value, max_depth: int = 3):
+        """Decode legacy JSON-in-a-string values without rejecting scalars."""
+        for _ in range(max_depth):
+            if not isinstance(value, str):
+                break
+            stripped = value.strip()
+            if not stripped:
+                break
+            try:
+                value = json.loads(stripped)
+            except (TypeError, ValueError):
+                break
+        return value

@@ -6,6 +6,42 @@ from api.logger import logger
 
 class LiveProcessor:
     @staticmethod
+    def _positive_seconds(value):
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            return None
+        return seconds if seconds > 0 else None
+
+    @classmethod
+    def _duration_seconds(cls, live: Live, live_status: dict):
+        """Read duration from current and legacy insertlive response shapes."""
+        temp = live_status.get("temp")
+        data = temp.get("data") if isinstance(temp, dict) else None
+        candidates = []
+        for container in (data, temp, live_status.get("data"), live_status):
+            if isinstance(container, dict):
+                candidates.extend(
+                    container.get(key)
+                    for key in ("duration", "liveDuration", "totalDuration")
+                )
+
+        attachment = getattr(live, "attachment", {})
+        properties = attachment.get("property") if isinstance(attachment, dict) else None
+        for container in (properties, attachment):
+            if isinstance(container, dict):
+                candidates.extend(
+                    container.get(key)
+                    for key in ("duration", "liveDuration", "totalDuration")
+                )
+
+        for candidate in candidates:
+            duration = cls._positive_seconds(candidate)
+            if duration is not None:
+                return duration
+        return None
+
+    @staticmethod
     def run_live(live: Live, speed: float = 1.0):
         """循环提交直播时长，直到达到总时长"""
         if speed != 1.0:
@@ -18,14 +54,14 @@ class LiveProcessor:
             return False
 
         # 解析直播总时长（单位：秒）
-        try:
-            duration = live_status.get("temp", {}).get("data", {}).get("duration", 0)
-            if not duration:
-                logger.warning("无法获取直播总时长，默认按30分钟处理")
-                duration = 30 * 60  # 默认30分钟
-        except Exception as e:
-            logger.error(f"解析直播时长失败: {str(e)}")
-            return False
+        duration = LiveProcessor._duration_seconds(live, live_status)
+        if duration is None:
+            temp = live_status.get("temp")
+            if isinstance(temp, dict) and temp.get("status") == 0:
+                logger.error("旧直播没有有效回放元数据，平台已拒绝该直播状态")
+                return False
+            logger.warning("无法获取直播总时长，默认按30分钟处理")
+            duration = 30 * 60
 
         # 根据播放速度调整所需时间
         adjusted_duration = duration / speed
