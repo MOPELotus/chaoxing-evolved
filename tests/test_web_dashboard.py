@@ -38,7 +38,7 @@ class DashboardParsingTests(unittest.TestCase):
                 result = service._assessment_course(object(), {"title": "Course"}, "homework")
             self.assertEqual(result, [{"title": "done"}])
             self.assertEqual(read.call_count, 2)
-            sleep.assert_called_once_with(5.0)
+            sleep.assert_called_once_with(30.0)
 
     def test_accepts_only_the_three_known_management_gaps(self):
         title = "\u7ba1\u7406\u5b66\u539f\u7406\uff08\u4ea4\u53c9\u901a\u8bc6\u8bfe\uff09"

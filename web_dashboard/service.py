@@ -28,7 +28,7 @@ ACCEPTED_COURSE_GAPS = {
     "\u7ba1\u7406\u5b66\u539f\u7406\uff08\u4ea4\u53c9\u901a\u8bc6\u8bfe\uff09": {"platform_done": 26, "total": 29},
 }
 ASSESSMENT_COURSE_DELAY_SECONDS = 1.25
-ASSESSMENT_RETRY_DELAYS = (5.0, 15.0)
+ASSESSMENT_RETRY_DELAYS = (30.0, 90.0)
 
 
 class AssessmentRateLimitError(RuntimeError):
@@ -611,6 +611,7 @@ class DashboardService:
                 if any(profile_selects(profile, course) for profile in profiles)
             ]
             rows: list[dict[str, Any]] = []
+            rate_limited = False
             for index, course in enumerate(selected_courses):
                 # Assessment endpoints are more sensitive than chapter APIs.
                 # Keep all reads serial and add a small inter-course pause so
@@ -620,6 +621,30 @@ class DashboardService:
                 try:
                     items = self._assessment_course(client, course, kind)
                     rows.append({"course_key": course_key(course), "course": course["title"], "items": items})
+                except AssessmentRateLimitError as exc:
+                    rows.append(
+                        {
+                            "course_key": course_key(course),
+                            "course": course.get("title", ""),
+                            "items": [],
+                            "error": f"{type(exc).__name__}: {exc}",
+                            "retryable": True,
+                        }
+                    )
+                    # Once verification persists after backoff, do not probe
+                    # every remaining course and extend the restriction.
+                    for deferred in selected_courses[index + 1 :]:
+                        rows.append(
+                            {
+                                "course_key": course_key(deferred),
+                                "course": deferred.get("title", ""),
+                                "items": [],
+                                "error": "平台限流冷却中，已延后读取",
+                                "retryable": True,
+                            }
+                        )
+                    rate_limited = True
+                    break
                 except Exception as exc:
                     rows.append(
                         {
@@ -637,6 +662,9 @@ class DashboardService:
                 "summary": {"total": sum(states.values()), **states},
                 "courses": rows,
             }
+            if rate_limited:
+                result["partial"] = True
+                result["retry_after_seconds"] = 120
             self._assessment_cache[cache_key] = (time.monotonic(), result)
             return copy.deepcopy(result)
 
