@@ -153,6 +153,32 @@ desktop_state/
 
 默认值为 `false`。关闭时不会读取或写入 AI 答案缓存；开启后才会按当前题目、站点、模型和思考强度懒加载缓存。
 
+临时人工答案可以放在题库服务之外的本地 JSON 文件中，并通过环境变量
+`CHAOXING_ANSWER_OVERRIDES_PATH` 或账号 `tiku.answer_overrides_path` 显式启用。路径既可指向单个文件，
+也可指向仅加载顶层 `*.json` 的目录；把规则移出该目录即可立即退役。规则必须限定账号配置名，并用
+完整题目缓存键，或用题干、题型、选项等字段精确匹配，不执行模糊匹配。示例：
+
+```json
+{
+  "version": 1,
+  "enabled": true,
+  "profiles": ["example-profile"],
+  "answers": [
+    {
+      "match": {
+        "title": "示例题目",
+        "type": "single",
+        "options": ["选项一", "选项二"]
+      },
+      "answer": "B"
+    }
+  ]
+}
+```
+
+该覆盖层优先于语义缓存和远端题库，但仍会经过原有题型校验；无效、过期或账号不匹配的规则会被忽略。
+规则文件可能包含课程专用答案，不应提交到仓库。
+
 ## Release 构建
 
 仓库已提供基于 GitHub Actions 的手动发布工作流，可用于触发多平台并行构建，并在构建完成后统一创建 Release。

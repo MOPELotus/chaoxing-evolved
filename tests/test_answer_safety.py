@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import unittest
+import json
+import os
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -67,6 +71,50 @@ class AnswerSafetyTests(unittest.TestCase):
             cache.return_value.get_cache.side_effect = lambda key: {original["title"]: "A", answer_cache_key(original): "A"}.get(key)
             with patch.object(provider, "_query_all", return_value=["B"]) as backend:
                 self.assertEqual(provider.query_all([reordered]), ["B"])
+                backend.assert_called_once()
+
+    def test_profile_scoped_local_override_precedes_response_backend(self):
+        question = {"title": "Choose", "type": "single", "options": ["alpha", "beta"]}
+        provider = DummyTiku()
+        provider.DISABLE = False
+        provider._conf = {}
+        provider._response_service = object()
+        with tempfile.TemporaryDirectory() as directory:
+            rule = {
+                "version": 1,
+                "profiles": ["test-profile"],
+                "answers": [{"match": question, "answer": "B"}],
+            }
+            Path(directory, "temporary.json").write_text(json.dumps(rule), encoding="utf-8")
+            context = SimpleNamespace(
+                config_path=Path("test-profile.json"), cache_path=Path(directory, "test.cache.json")
+            )
+            with patch.dict(os.environ, {"CHAOXING_ANSWER_OVERRIDES_PATH": directory}), \
+                 patch("api.answer.get_runtime_context", return_value=context), \
+                 patch.object(provider, "_query_all", return_value=["A"]) as backend:
+                self.assertEqual(provider.query_all([dict(question)], force_refresh=True), ["B"])
+                backend.assert_not_called()
+
+    def test_invalid_or_unrelated_override_falls_back_to_backend(self):
+        question = {"title": "Choose", "type": "single", "options": ["alpha", "beta"]}
+        provider = DummyTiku()
+        provider.DISABLE = False
+        provider._conf = {}
+        provider._response_service = object()
+        with tempfile.TemporaryDirectory() as directory:
+            rule = {
+                "version": 1,
+                "profiles": ["another-profile"],
+                "answers": [{"match": question, "answer": "not-an-option"}],
+            }
+            Path(directory, "temporary.json").write_text(json.dumps(rule), encoding="utf-8")
+            context = SimpleNamespace(
+                config_path=Path("test-profile.json"), cache_path=Path(directory, "test.cache.json")
+            )
+            with patch.dict(os.environ, {"CHAOXING_ANSWER_OVERRIDES_PATH": directory}), \
+                 patch("api.answer.get_runtime_context", return_value=context), \
+                 patch.object(provider, "_query_all", return_value=["A"]) as backend:
+                self.assertEqual(provider.query_all([dict(question)]), ["A"])
                 backend.assert_called_once()
 
     def run_work(self, kind, answers, *, manual=False, submit=True, controls=None):

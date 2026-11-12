@@ -63,6 +63,85 @@ def answer_cache_key(question: dict) -> str:
     return "question-v2:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def _answer_override_path(config: Mapping[str, Any] | None) -> Path | None:
+    """Return the explicitly configured local override path, if any.
+
+    Overrides are intentionally opt-in and kept separate from provider caches.
+    This lets operators retire a temporary rule simply by removing or moving
+    its JSON file without changing the configured question-bank service.
+    """
+    raw_path = os.environ.get("CHAOXING_ANSWER_OVERRIDES_PATH", "").strip()
+    if not raw_path and config:
+        raw_path = str(config.get("answer_overrides_path") or "").strip()
+    return Path(raw_path).expanduser() if raw_path else None
+
+
+def _override_profile_name() -> str:
+    path = get_runtime_context().config_path
+    name = path.name
+    return name[:-5] if name.endswith(".json") else path.stem
+
+
+def _override_value_matches(actual: Any, expected: Any, field: str) -> bool:
+    if field == "title":
+        return normalize_question_title(str(actual or "")) == normalize_question_title(str(expected or ""))
+    if field in {"options", "option_items"}:
+        if isinstance(actual, str):
+            actual = [line.strip() for line in actual.splitlines() if line.strip()]
+        if isinstance(expected, str):
+            expected = [line.strip() for line in expected.splitlines() if line.strip()]
+        return actual == expected
+    return actual == expected
+
+
+def load_local_answer_override(question: dict, config: Mapping[str, Any] | None = None) -> Any:
+    """Load an exact, profile-scoped answer from an operator-owned JSON file.
+
+    The path may name one JSON file or a directory of JSON files. A rule can
+    use either the stable ``cache_key`` or an exact ``match`` mapping. Invalid,
+    disabled, expired, or unrelated rules are ignored and provider lookup
+    continues normally.
+    """
+    path = _answer_override_path(config)
+    if path is None:
+        return None
+    files = sorted(path.glob("*.json")) if path.is_dir() else [path]
+    profile = _override_profile_name()
+    question_key = answer_cache_key(question)
+    now = time.time()
+    for rule_file in files:
+        try:
+            payload = json.loads(rule_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            logger.warning("本地答案覆盖文件无法读取，已忽略：{}", rule_file.name)
+            continue
+        if not isinstance(payload, Mapping) or payload.get("enabled", True) is not True:
+            continue
+        expires_at = payload.get("expires_at")
+        if isinstance(expires_at, (int, float)) and expires_at <= now:
+            continue
+        profiles = payload.get("profiles") or []
+        if profiles and (not isinstance(profiles, list) or profile not in profiles):
+            continue
+        entries = payload.get("answers") or []
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, Mapping) or "answer" not in entry:
+                continue
+            cache_key = entry.get("cache_key")
+            selector = entry.get("match")
+            matched = cache_key == question_key if cache_key else (
+                isinstance(selector, Mapping)
+                and bool(selector)
+                and all(_override_value_matches(question.get(field), value, str(field)) for field, value in selector.items())
+            )
+            if matched:
+                logger.info("从本地临时覆盖获取答案：{}（{}）", question.get("title", ""), rule_file.name)
+                return entry["answer"]
+    return None
+
+
 def extract_image_urls(text: str | None) -> list[str]:
     if not text:
         return []
@@ -539,6 +618,12 @@ class Tiku:
 
         q_info = self._normalize_question_info(q_info)
 
+        override = self._coerce_answer(load_local_answer_override(q_info, self._conf), q_info)
+        if self._has_answer(override):
+            if self._validate_answer(override, q_info):
+                return override
+            logger.warning(f"本地临时覆盖未通过当前题型校验，已忽略：{q_info['title']}")
+
         # 先过缓存
         cache_dao = CacheDAO()
         use_legacy_cache = getattr(self, "_response_service", None) is None
@@ -560,7 +645,11 @@ class Tiku:
     def query_without_cache(self, q_info: dict) -> Any:
         if self.DISABLE:
             return None
-        return self._query_validated(self._normalize_question_info(q_info))
+        q_info = self._normalize_question_info(q_info)
+        override = self._coerce_answer(load_local_answer_override(q_info, self._conf), q_info)
+        if self._has_answer(override) and self._validate_answer(override, q_info):
+            return override
+        return self._query_validated(q_info)
 
     def query_all(
         self,
@@ -582,6 +671,13 @@ class Tiku:
             q['title'] = normalize_question_title(q['title'])
             if not self._is_manual_mode:
                 logger.debug(f"处理后标题：{q['title']}")
+
+            override = self._coerce_answer(load_local_answer_override(q, self._conf), q)
+            if self._has_answer(override):
+                if self._validate_answer(override, q):
+                    results[idx] = override
+                    continue
+                logger.warning(f"本地临时覆盖未通过当前题型校验，已忽略：{q['title']}")
 
             answer = (
                 None
