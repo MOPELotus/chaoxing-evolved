@@ -1321,6 +1321,8 @@ class Chaoxing:
 
         forbidden_retry = 0
         max_forbidden_retry = 2
+        final_report_retry = 0
+        max_final_report_retry = 30
 
         passed, state = self.video_progress_log(_session, _course, _job, _job_info, _dtoken, duration, duration,
                                                 _type, headers=headers, _isdrag=4)
@@ -1336,6 +1338,18 @@ class Chaoxing:
 
                     passed, state = self.video_progress_log(_session, _course, _job, _job_info, _dtoken, duration,
                                                             int(play_time), _type, headers=headers)
+
+                    if play_time == duration and not passed and state == 200:
+                        final_report_retry += 1
+                        if final_report_retry >= max_final_report_retry:
+                            logger.warning(
+                                "媒体已到末尾但平台连续 {} 次未确认完成，结束本次任务并交由章节重试: {}",
+                                final_report_retry,
+                                _job["name"],
+                            )
+                            return StudyResult.ERROR
+                    elif play_time < duration or passed:
+                        final_report_retry = 0
 
                     if state == 403:
                         if forbidden_retry >= max_forbidden_retry:
