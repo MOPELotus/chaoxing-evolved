@@ -46,6 +46,12 @@ class DashboardParsingTests(unittest.TestCase):
         self.assertEqual(accepted_course_gap(title, 25, 29), 0)
         self.assertEqual(accepted_course_gap("\u5176\u4ed6\u8bfe\u7a0b", 26, 29), 0)
 
+    def test_accepts_liuxing_review_mode_gaps_only_for_his_account(self):
+        title = "\u82f1\u8bed\u542c\u8bf42\uff082026\u5e74\u6625\u5b66\u671f\uff09"
+        self.assertEqual(accepted_course_gap(title, 76, 97, "17536308868"), 21)
+        self.assertEqual(accepted_course_gap(title, 76, 97, "15525142626"), 0)
+        self.assertEqual(accepted_course_gap(title, 75, 97, "17536308868"), 0)
+
     def test_normalize_assessment_states(self):
         self.assertEqual(normalize_status("已完成"), "completed")
         self.assertEqual(normalize_status("已提交，待批阅"), "pending_review")

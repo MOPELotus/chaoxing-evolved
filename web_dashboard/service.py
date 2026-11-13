@@ -27,6 +27,14 @@ SCHOOL_FALLBACKS = {"170121": "\u5c71\u897f\u519c\u4e1a\u5927\u5b66"}
 ACCEPTED_COURSE_GAPS = {
     "\u7ba1\u7406\u5b66\u539f\u7406\uff08\u4ea4\u53c9\u901a\u8bc6\u8bfe\uff09": {"platform_done": 26, "total": 29},
 }
+ACCOUNT_ACCEPTED_COURSE_GAPS = {
+    "17536308868": {
+        "\u690d\u7269\u751f\u7406\u5b662026\u5e74\u79cb\u5b63\u5b66\u671f": {"platform_done": 79, "total": 80},
+        "\u5236\u56fe\u57fa\u78402026\u6625": {"platform_done": 9, "total": 12},
+        "\u82f1\u8bed\u542c\u8bf42\uff082026\u5e74\u6625\u5b66\u671f\uff09": {"platform_done": 76, "total": 97},
+        "\u6709\u673a\u5316\u5b66": {"platform_done": 164, "total": 165},
+    },
+}
 ASSESSMENT_COURSE_DELAY_SECONDS = 1.25
 ASSESSMENT_RETRY_DELAYS = (30.0, 90.0)
 
@@ -82,9 +90,11 @@ def normalize_status(raw: str) -> str:
     return "unknown"
 
 
-def accepted_course_gap(title: str, done: int, total: int) -> int:
+def accepted_course_gap(title: str, done: int, total: int, username: str = "") -> int:
     """Return the number of explicitly accepted platform-only gaps."""
-    rule = ACCEPTED_COURSE_GAPS.get(title)
+    rule = ACCOUNT_ACCEPTED_COURSE_GAPS.get(username, {}).get(title)
+    if rule is None:
+        rule = ACCEPTED_COURSE_GAPS.get(title)
     if not rule or total != rule["total"] or done < rule["platform_done"]:
         return 0
     return max(0, total - done)
@@ -492,7 +502,7 @@ class DashboardService:
                             )
                         total = len(chapters)
                         platform_done = done
-                        accepted = accepted_course_gap(row["title"], platform_done, total)
+                        accepted = accepted_course_gap(row["title"], platform_done, total, username)
                         done = min(total, platform_done + accepted)
                         percent = round(done * 100 / total, 1) if total else 0
                         row["progress"] = {"done": done, "total": total, "percent": percent}
