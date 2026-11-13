@@ -1784,7 +1784,11 @@ class Chaoxing:
                 logger.warning(f"章节检测任务已过期，按跳过处理: {e}")
                 return StudyResult.SKIPPED
             logger.warning(f"跳过章节检测: {e}")
-            return StudyResult.SUCCESS
+            # A teacher-side placeholder has no submit endpoint and therefore
+            # can never become platform-complete.  Preserve that distinction so
+            # the chapter confirmation layer treats it as an accepted skip
+            # instead of repeatedly retrying it as a successful submission.
+            return StudyResult.SKIPPED
         except Exception as e:
             logger.error(f"获取章节检测题目失败, 达到最大重试次数: {e}")
             return StudyResult.ERROR

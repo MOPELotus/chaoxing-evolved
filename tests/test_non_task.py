@@ -179,6 +179,26 @@ class NonTaskTests(unittest.TestCase):
         client.tiku.query_all.assert_not_called()
         session.post.assert_not_called()
 
+    def test_teacher_uncreated_work_is_an_accepted_skip(self):
+        client = Chaoxing()
+        client.tiku = Mock(DISABLE=False)
+        client.tiku.get_submit_params.return_value = "0"
+        session = Mock()
+        session.get.return_value = Mock(
+            status_code=200,
+            text='教师未创建完成该测验',
+            url='https://mooc1.chaoxing.com/mooc-ans/api/work',
+        )
+        with patch.object(SessionManager, 'get_session', return_value=session):
+            result = client._study_work_once(
+                {'courseId': 'course', 'clazzId': 'class'},
+                {'jobid': 'work-source', 'enc': 'test-enc'},
+                {'knowledgeid': 'point', 'ktoken': 'test-token', 'cpi': 'member'},
+            )
+        self.assertEqual(result, StudyResult.SKIPPED)
+        self.assertEqual(session.get.call_count, 1)
+        session.post.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()
