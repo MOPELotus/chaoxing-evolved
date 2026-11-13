@@ -82,6 +82,22 @@ class DashboardParsingTests(unittest.TestCase):
         self.assertEqual(result["platform_progress"], {"done": 9, "total": 12, "percent": 75.0})
         self.assertEqual(result["accepted_incomplete"], 3)
 
+    def test_accepts_only_the_uncreated_ai_test_for_known_accounts(self):
+        title = "人人必修的人工智能课"
+        key = "268483479::158109113"
+        missing = [{"id": "1271621406", "completed": False}]
+        for username in ("18535384169", "15620674223", "16632852375", "13642174868"):
+            self.assertEqual(accepted_course_gap(title, 415, 416, username, key, missing), 1)
+        self.assertEqual(accepted_course_gap(title, 415, 416, "other", key, missing), 0)
+        self.assertEqual(accepted_course_gap(title, 415, 416, "18535384169", "wrong", missing), 0)
+        self.assertEqual(
+            accepted_course_gap(
+                title, 415, 416, "18535384169", key,
+                [{"id": "different", "completed": False}],
+            ),
+            0,
+        )
+
     def test_accepts_wangkejia_expired_tests_and_legacy_live_only(self):
         linear_missing = [
             {"id": "890010627", "completed": False},
