@@ -200,6 +200,16 @@ def process_job(
     challenge_attempt: int = 0,
 ) -> StudyResult:
     if job["type"] == "video":
+        property_data = job.get("property") if isinstance(job.get("property"), dict) else {}
+        doublespeed = property_data.get("doublespeed")
+        media_speed = speed
+        if doublespeed is not None and str(doublespeed).strip().lower() in {"0", "false"} and speed > 1:
+            media_speed = 1.0
+            logger.warning(
+                "平台禁止该媒体倍速播放，已将速度从 {} 调整为 1.0: {}",
+                speed,
+                job.get("name") or job.get("jobid", ""),
+            )
         preferred_type = "Audio" if is_audio_media_job(job) else "Video"
         fallback_type = "Video" if preferred_type == "Audio" else "Audio"
         logger.trace(
@@ -209,7 +219,7 @@ def process_job(
             job["jobid"],
         )
         media_result = chaoxing.study_video(
-            course, job, job_info, _speed=speed, _type=preferred_type
+            course, job, job_info, _speed=media_speed, _type=preferred_type
         )
         if media_result.is_failure():
             logger.warning(
@@ -219,7 +229,7 @@ def process_job(
                 job.get("name") or job.get("jobid", ""),
             )
             media_result = chaoxing.study_video(
-                course, job, job_info, _speed=speed, _type=fallback_type
+                course, job, job_info, _speed=media_speed, _type=fallback_type
             )
         if media_result.is_failure():
             logger.warning(f"出现异常任务 -> 任务章节: {course['title']} 任务ID: {job['jobid']}, 已跳过")
