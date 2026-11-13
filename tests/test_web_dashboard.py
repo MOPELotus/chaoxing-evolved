@@ -8,6 +8,7 @@ from web_dashboard.service import (
     DashboardService,
     accepted_course_gap,
     assessment_response_is_limited,
+    course_progress_with_accepted_gaps,
     normalize_status,
     parse_assessment_html,
     parse_school,
@@ -48,9 +49,61 @@ class DashboardParsingTests(unittest.TestCase):
 
     def test_accepts_liuxing_review_mode_gaps_only_for_his_account(self):
         title = "\u82f1\u8bed\u542c\u8bf42\uff082026\u5e74\u6625\u5b66\u671f\uff09"
-        self.assertEqual(accepted_course_gap(title, 76, 97, "17536308868"), 21)
-        self.assertEqual(accepted_course_gap(title, 76, 97, "15525142626"), 0)
-        self.assertEqual(accepted_course_gap(title, 75, 97, "17536308868"), 0)
+        key = "260961829::140972036"
+        ids = {
+            "1123536611", "1123536485", "1123536488", "1123536613", "1123536615",
+            "1123536489", "1123536492", "1123536616", "1123536618", "1123536493",
+            "1123536502", "1123536622", "1123536623", "1123536503", "1123536512",
+            "1123536513", "1123536514", "1123536496", "1123536619", "1123536620",
+            "1123536497",
+        }
+        missing = [{"id": value, "completed": False} for value in ids]
+        self.assertEqual(accepted_course_gap(title, 76, 97, "17536308868", key, missing), 21)
+        self.assertEqual(accepted_course_gap(title, 76, 97, "15525142626", key, missing), 0)
+        self.assertEqual(accepted_course_gap(title, 75, 97, "17536308868", key, missing), 0)
+        wrong = [{"id": value, "completed": False} for value in (ids - {next(iter(ids))}) | {"other"}]
+        self.assertEqual(accepted_course_gap(title, 76, 97, "17536308868", key, wrong), 0)
+        self.assertEqual(accepted_course_gap(title, 76, 97, "17536308868", "wrong", missing), 0)
+
+    def test_accepted_gap_progress_preserves_platform_progress(self):
+        completed = [{"id": f"done-{index}", "completed": True} for index in range(9)]
+        missing = [
+            {"id": "945060525", "completed": False},
+            {"id": "945060532", "completed": False},
+            {"id": "945060534", "completed": False},
+        ]
+        result = course_progress_with_accepted_gaps(
+            "\u5236\u56fe\u57fa\u78402026\u6625",
+            completed + missing,
+            "17536308868",
+            "249908415::141295850",
+        )
+        self.assertEqual(result["progress"], {"done": 12, "total": 12, "percent": 100.0})
+        self.assertEqual(result["platform_progress"], {"done": 9, "total": 12, "percent": 75.0})
+        self.assertEqual(result["accepted_incomplete"], 3)
+
+    def test_accepts_wangkejia_expired_tests_and_legacy_live_only(self):
+        linear_missing = [
+            {"id": "890010627", "completed": False},
+            {"id": "890010667", "completed": False},
+            {"id": "890010673", "completed": False},
+        ]
+        self.assertEqual(
+            accepted_course_gap(
+                "\u7ebf\u6027\u4ee3\u6570(\u5c71\u897f\u519c\u5927\uff092026", 28, 31,
+                "15525142626", "245119388::151983361", linear_missing,
+            ),
+            3,
+        )
+        organic_missing = [{"id": "155599827", "completed": False}]
+        self.assertEqual(accepted_course_gap(
+            "\u6709\u673a\u5316\u5b66", 164, 165, "15525142626",
+            "204244247::140209174", organic_missing,
+        ), 1)
+        self.assertEqual(accepted_course_gap(
+            "\u6709\u673a\u5316\u5b66", 163, 165, "15525142626",
+            "204244247::140209174", organic_missing,
+        ), 0)
 
     def test_normalize_assessment_states(self):
         self.assertEqual(normalize_status("已完成"), "completed")

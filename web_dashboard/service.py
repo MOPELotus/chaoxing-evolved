@@ -29,10 +29,41 @@ ACCEPTED_COURSE_GAPS = {
 }
 ACCOUNT_ACCEPTED_COURSE_GAPS = {
     "17536308868": {
-        "\u690d\u7269\u751f\u7406\u5b662026\u5e74\u79cb\u5b63\u5b66\u671f": {"platform_done": 79, "total": 80},
-        "\u5236\u56fe\u57fa\u78402026\u6625": {"platform_done": 9, "total": 12},
-        "\u82f1\u8bed\u542c\u8bf42\uff082026\u5e74\u6625\u5b66\u671f\uff09": {"platform_done": 76, "total": 97},
-        "\u6709\u673a\u5316\u5b66": {"platform_done": 164, "total": 165},
+        "265976178::151640141": {
+            "title": "\u690d\u7269\u751f\u7406\u5b662026\u5e74\u79cb\u5b63\u5b66\u671f",
+            "platform_done": 79, "total": 80, "missing_ids": {"1216342410"},
+        },
+        "249908415::141295850": {
+            "title": "\u5236\u56fe\u57fa\u78402026\u6625",
+            "platform_done": 9, "total": 12,
+            "missing_ids": {"945060525", "945060532", "945060534"},
+        },
+        "260961829::140972036": {
+            "title": "\u82f1\u8bed\u542c\u8bf42\uff082026\u5e74\u6625\u5b66\u671f\uff09",
+            "platform_done": 76, "total": 97,
+            "missing_ids": {
+                "1123536611", "1123536485", "1123536488", "1123536613", "1123536615",
+                "1123536489", "1123536492", "1123536616", "1123536618", "1123536493",
+                "1123536502", "1123536622", "1123536623", "1123536503", "1123536512",
+                "1123536513", "1123536514", "1123536496", "1123536619", "1123536620",
+                "1123536497",
+            },
+        },
+        "204244247::139983274": {
+            "title": "\u6709\u673a\u5316\u5b66",
+            "platform_done": 164, "total": 165, "missing_ids": {"155599827"},
+        },
+    },
+    "15525142626": {
+        "245119388::151983361": {
+            "title": "\u7ebf\u6027\u4ee3\u6570(\u5c71\u897f\u519c\u5927\uff092026",
+            "platform_done": 28, "total": 31,
+            "missing_ids": {"890010627", "890010667", "890010673"},
+        },
+        "204244247::140209174": {
+            "title": "\u6709\u673a\u5316\u5b66",
+            "platform_done": 164, "total": 165, "missing_ids": {"155599827"},
+        },
     },
 }
 ASSESSMENT_COURSE_DELAY_SECONDS = 1.25
@@ -90,14 +121,59 @@ def normalize_status(raw: str) -> str:
     return "unknown"
 
 
-def accepted_course_gap(title: str, done: int, total: int, username: str = "") -> int:
+def accepted_course_gap(
+    title: str,
+    done: int,
+    total: int,
+    username: str = "",
+    key: str = "",
+    missing_chapters: list[dict[str, Any]] | None = None,
+) -> int:
     """Return the number of explicitly accepted platform-only gaps."""
-    rule = ACCOUNT_ACCEPTED_COURSE_GAPS.get(username, {}).get(title)
-    if rule is None:
+    account_rules = ACCOUNT_ACCEPTED_COURSE_GAPS.get(username)
+    rule = account_rules.get(key) if account_rules is not None else None
+    if rule is not None:
+        missing_ids = {
+            str(chapter.get("id") or "")
+            for chapter in (missing_chapters or [])
+            if not chapter.get("completed")
+        }
+        if title != rule["title"] or missing_ids != rule["missing_ids"]:
+            return 0
+    else:
         rule = ACCEPTED_COURSE_GAPS.get(title)
     if not rule or total != rule["total"] or done < rule["platform_done"]:
         return 0
     return max(0, total - done)
+
+
+def course_progress_with_accepted_gaps(
+    title: str,
+    chapters: list[dict[str, Any]],
+    username: str = "",
+    key: str = "",
+) -> dict[str, Any]:
+    """Build dashboard progress while preserving the raw platform counters."""
+    total = len(chapters)
+    platform_done = sum(bool(chapter.get("completed")) for chapter in chapters)
+    missing = [chapter for chapter in chapters if not chapter.get("completed")]
+    accepted = accepted_course_gap(title, platform_done, total, username, key, missing)
+    done = min(total, platform_done + accepted)
+    result: dict[str, Any] = {
+        "progress": {
+            "done": done,
+            "total": total,
+            "percent": round(done * 100 / total, 1) if total else 0,
+        }
+    }
+    if accepted:
+        result["platform_progress"] = {
+            "done": platform_done,
+            "total": total,
+            "percent": round(platform_done * 100 / total, 1),
+        }
+        result["accepted_incomplete"] = accepted
+    return result
 
 
 def parse_assessment_html(html: str, kind: str) -> list[dict[str, str]]:
@@ -500,19 +576,12 @@ class DashboardService:
                                     "state": point_state,
                                 }
                             )
-                        total = len(chapters)
-                        platform_done = done
-                        accepted = accepted_course_gap(row["title"], platform_done, total, username)
-                        done = min(total, platform_done + accepted)
-                        percent = round(done * 100 / total, 1) if total else 0
-                        row["progress"] = {"done": done, "total": total, "percent": percent}
-                        if accepted:
-                            row["platform_progress"] = {
-                                "done": platform_done,
-                                "total": total,
-                                "percent": round(platform_done * 100 / total, 1),
-                            }
-                            row["accepted_incomplete"] = accepted
+                        progress_fields = course_progress_with_accepted_gaps(
+                            row["title"], chapters, username, key
+                        )
+                        row.update(progress_fields)
+                        total = row["progress"]["total"]
+                        done = row["progress"]["done"]
                         row["chapters"] = chapters
                         total_done += done
                         total_points += total
