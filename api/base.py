@@ -1330,6 +1330,21 @@ class Chaoxing:
             logger.info("任务瞬间完成: {}", _job['name'])
             return StudyResult.SUCCESS
 
+        property_data = _job.get("property") if isinstance(_job.get("property"), dict) else {}
+        doublespeed = property_data.get("doublespeed")
+        doublespeed_disabled = doublespeed is not None and str(doublespeed).strip().lower() in {"0", "false"}
+        if doublespeed_disabled and play_time >= duration:
+            # A previous accelerated run can leave headOffset at the end while
+            # the task itself remains unpassed.  Replaying from zero at the
+            # platform-required normal speed creates valid progress reports
+            # instead of polling the rejected end position forever.
+            logger.warning(
+                "禁倍速媒体已到末尾但平台未确认完成，将从头按 1.0 倍速重播: {}",
+                _job["name"],
+            )
+            play_time = 0
+            last_log_time = 0
+
         pbar = None
         try:
             while not passed:
