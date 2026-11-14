@@ -140,6 +140,7 @@ def _normalize_common_config(section: dict[str, Any]) -> dict[str, Any]:
         "chapter_retry_limit": max(0, int(section.get("chapter_retry_limit", 5))),
         "course_jobs": max(1, int(section.get("course_jobs", 1) or 1)),
         "include_non_task": to_bool(section.get("include_non_task", False)),
+        "review_mode": to_bool(section.get("review_mode", False)),
         "notopen_action": str(section.get("notopen_action", "retry") or "retry").strip(),
         "challenge_retry_attempts": max(1, min(3, int(section.get("challenge_retry_attempts", 3) or 3))),
         "add_learning_count": to_bool(section.get("add_learning_count", False)),
@@ -368,6 +369,7 @@ class JobProcessor:
                 challenge_attempt=task.tries,
                 abort_event=self.abort_event,
                 include_non_task=self.config.get("include_non_task", False),
+                review_mode=self.config.get("review_phase", False),
                 deferred_readings=self.course.setdefault("_reading_targets", {}),
             )
 
@@ -470,22 +472,28 @@ def process_chapter(
     challenge_attempt: int = 0,
     abort_event: threading.Event | None = None,
     include_non_task: bool = False,
+    review_mode: bool = False,
     deferred_readings: dict[str, dict[str, Any]] | None = None,
 ) -> ChapterResult:
     logger.info(f'当前章节: {point["title"]}')
     if abort_event is not None and abort_event.is_set():
         return ChapterResult.ERROR
-    if is_expired_task_text(point.get("title")) or is_expired_task_text(point.get("status")):
+    if not review_mode and (
+        is_expired_task_text(point.get("title")) or is_expired_task_text(point.get("status"))
+    ):
         logger.warning("章节任务已过期，按完成处理: {}", point.get("title", ""))
         return ChapterResult.SUCCESS
-    if point["has_finished"] and not include_non_task:
+    if point["has_finished"] and not include_non_task and not review_mode:
         logger.info(f'章节：{point["title"]} 已完成所有任务点')
         return ChapterResult.SUCCESS
 
     chaoxing.rate_limiter.limit_rate(random_time=True, random_min=0, random_max=0.2)
     if abort_event is not None and abort_event.is_set():
         return ChapterResult.ERROR
-    if include_non_task:
+    if review_mode:
+        jobs, job_info = chaoxing.get_job_list(course, point, review_mode=True)
+        logger.info("[复习模式] {} | 可重播媒体 {}", point["title"], len(jobs))
+    elif include_non_task:
         jobs, job_info = chaoxing.get_job_list(course, point, include_non_task=True)
         for book in job_info.get('book_readings', []):
             course.setdefault('_book_readings', {})[str(book['id'])] = book
@@ -528,6 +536,9 @@ def process_chapter(
             logger.info("[非任务点处理结果] {} | {} | {}", point["title"], job["type"], result.name)
         if result.is_failure():
             return ChapterResult.ERROR
+
+    if review_mode:
+        return ChapterResult.SUCCESS
 
     skipped_result = any(result == StudyResult.SKIPPED for result in job_results)
     # A successful work POST only means that Chaoxing accepted the request. It
@@ -601,8 +612,43 @@ def process_course(chaoxing: Chaoxing, course: dict[str, Any], config: dict[str,
         processor.run()
         if processor.fatal_error:
             raise RuntimeError(f"课程 [{course['title']}] 已停止: {processor.fatal_error}")
-        if processor.failed_tasks:
-            failed_titles = ", ".join(task.point.get("title", "") for task in processor.failed_tasks)
+        normal_failed_titles = [
+            task.point.get("title", "") for task in processor.failed_tasks
+        ]
+
+        if config.get("review_mode", False):
+            logger.info("========== 复习阶段：{} ==========" , course["title"])
+            refreshed = chaoxing.get_course_point(
+                course["courseId"], course["clazzId"], course["cpi"]
+            )
+            review_tasks = [
+                ChapterTask(point=point, index=index)
+                for index, point in enumerate(refreshed["points"])
+            ]
+            review_config = dict(config)
+            review_config.update(
+                review_phase=True,
+                include_non_task=False,
+                reading_duration_seconds=0,
+            )
+            review_processor = JobProcessor(chaoxing, course, review_tasks, review_config)
+            review_processor.run()
+            if review_processor.fatal_error:
+                raise RuntimeError(
+                    f"课程 [{course['title']}] 复习阶段已停止: {review_processor.fatal_error}"
+                )
+            if review_processor.failed_tasks:
+                failed_titles = ", ".join(
+                    task.point.get("title", "")
+                    for task in review_processor.failed_tasks
+                )
+                raise RuntimeError(
+                    f"课程 [{course['title']}] 复习阶段存在失败章节: {failed_titles}"
+                )
+            course["_review_outcome"] = "执行结束"
+
+        if normal_failed_titles:
+            failed_titles = ", ".join(normal_failed_titles)
             raise RuntimeError(f"课程 [{course['title']}] 存在未完成章节: {failed_titles}")
     finally:
         if config.get("include_non_task", False):

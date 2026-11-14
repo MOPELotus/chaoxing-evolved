@@ -129,6 +129,7 @@ DEFAULT_PROFILE = {
         "chapter_retry_limit": 5,
         "course_jobs": 1,
         "include_non_task": False,
+        "review_mode": False,
         "notopen_action": "retry",
         "add_learning_count": False,
         "target_count": 100,

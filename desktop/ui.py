@@ -1101,6 +1101,8 @@ class ProfileEditorPanel(QWidget):
         self.add_learning_count_check.setToolTip("所有所选课程的任务流程结束后，统一运行学习次数阶段；不重新执行答题和视频。")
         self.include_non_task_check = CheckBox("非任务点运行", self.common_card)
         self.include_non_task_check.setToolTip("运行任务点的同时，检查所有知识点（包括已完成知识点）内的非任务点视频、音频、文档和测验；讨论、图书和图片列为待人工，不计为完成。")
+        self.review_mode_check = CheckBox("复习模式", self.common_card)
+        self.review_mode_check.setToolTip("先补未完成知识点，再按当前课程并发和章节并发设置，将整门课程的媒体从头复习一遍；不会重复提交已完成测验。")
         self.target_count_spin = SpinBox(self.common_card)
         self.target_count_spin.setRange(0, 100000)
         self.target_count_spin.setValue(100)
@@ -1129,6 +1131,7 @@ class ProfileEditorPanel(QWidget):
         )
         self.common_card.body_layout.addLayout(common_grid)
         self.common_card.body_layout.addWidget(self.include_non_task_check)
+        self.common_card.body_layout.addWidget(self.review_mode_check)
         self.scroll_layout.addWidget(self.common_card)
 
         self._wire_dirty_signals(
@@ -1143,6 +1146,7 @@ class ProfileEditorPanel(QWidget):
             self.cache_path_edit,
             self.add_learning_count_check,
             self.include_non_task_check,
+            self.review_mode_check,
             self.target_count_spin,
             self.reading_duration_spin,
         )
@@ -1610,6 +1614,7 @@ class ProfileEditorPanel(QWidget):
             self.false_list_edit,
             self.add_learning_count_check,
             self.include_non_task_check,
+            self.review_mode_check,
             self.target_count_spin,
             self.reading_duration_spin,
             self.ai_site_edit,
@@ -1667,6 +1672,7 @@ class ProfileEditorPanel(QWidget):
         self.cache_path_edit.clear()
         self.add_learning_count_check.setChecked(False)
         self.include_non_task_check.setChecked(False)
+        self.review_mode_check.setChecked(False)
         self.target_count_spin.setValue(100)
         self.reading_duration_spin.setValue(0)
         self.ai_site_edit.clear()
@@ -1761,6 +1767,7 @@ class ProfileEditorPanel(QWidget):
         self.cache_path_edit.setText(str(common.get("cache_path", "")))
         self.add_learning_count_check.setChecked(bool(common.get("add_learning_count", False)))
         self.include_non_task_check.setChecked(bool(common.get("include_non_task", False)))
+        self.review_mode_check.setChecked(bool(common.get("review_mode", False)))
         self.target_count_spin.setValue(config_int(common.get("target_count", 100), 100))
         self.reading_duration_spin.setValue(config_int(common.get("reading_duration_seconds", 0), 0))
 
@@ -1937,6 +1944,7 @@ class ProfileEditorPanel(QWidget):
         common["notopen_action"] = get_notopen_action(self.notopen_combo)
         common["add_learning_count"] = self.add_learning_count_check.isChecked()
         common["include_non_task"] = self.include_non_task_check.isChecked()
+        common["review_mode"] = self.review_mode_check.isChecked()
         common["target_count"] = int(self.target_count_spin.value())
         common["reading_duration_seconds"] = int(self.reading_duration_spin.value())
 

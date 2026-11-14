@@ -1006,7 +1006,13 @@ class Chaoxing:
         logger.info("课程章节读取成功...")
         return decode_course_point(_resp.text)
 
-    def get_job_list(self, course: dict, point: dict, include_non_task: bool = False) -> tuple[list[dict], dict]:
+    def get_job_list(
+        self,
+        course: dict,
+        point: dict,
+        include_non_task: bool = False,
+        review_mode: bool = False,
+    ) -> tuple[list[dict], dict]:
         if self._fatal_task_error:
             return [], {"fatal_error": self._fatal_task_error}
         _session = SessionManager.get_session()
@@ -1091,7 +1097,9 @@ class Chaoxing:
                     self._fatal_task_error = reason
                     return [], {"fatal_error": reason, "captcha_required": captcha_blocked}
 
-            if include_non_task:
+            if review_mode:
+                _job_list, _job_info = decode_course_card(_resp.text, review_mode=True)
+            elif include_non_task:
                 _job_list, _job_info = decode_course_card(_resp.text, include_non_task=True)
                 if point.get("has_finished"):
                     _job_list = [job for job in _job_list if job.get("non_task")]
@@ -1312,23 +1320,35 @@ class Chaoxing:
         # Time in the video (can be scaled with the speed factor): duration, play_time, last_log_time, wait_time
 
         duration = int(_video_info["duration"])
-        play_time = int(_job["playTime"]) // 1000
+        review_mode = bool(_job.get("review"))
+        play_time = 0 if review_mode else int(_job["playTime"]) // 1000
         last_log_time = 0
         last_iter = time.time()
         wait_time = int(random.uniform(30, 90))
 
-        logger.info(f"开始任务: {_job['name']}, 总时长: {duration}s, 已进行: {play_time}s")
+        logger.info(
+            "{}任务: {}, 总时长: {}s, 已进行: {}s",
+            "开始复习" if review_mode else "开始",
+            _job["name"],
+            duration,
+            play_time,
+        )
 
         forbidden_retry = 0
         max_forbidden_retry = 2
         final_report_retry = 0
         max_final_report_retry = 30
 
-        passed, state = self.video_progress_log(_session, _course, _job, _job_info, _dtoken, duration, duration,
-                                                _type, headers=headers, _isdrag=4)
-        if passed:
-            logger.info("任务瞬间完成: {}", _job['name'])
-            return StudyResult.SUCCESS
+        if review_mode:
+            passed, state = False, 200
+        else:
+            passed, state = self.video_progress_log(
+                _session, _course, _job, _job_info, _dtoken, duration, duration,
+                _type, headers=headers, _isdrag=4,
+            )
+            if passed:
+                logger.info("任务瞬间完成: {}", _job['name'])
+                return StudyResult.SUCCESS
 
         property_data = _job.get("property") if isinstance(_job.get("property"), dict) else {}
         doublespeed = property_data.get("doublespeed")
@@ -1351,8 +1371,15 @@ class Chaoxing:
                 # Sometimes the last request needs to be sent several times to complete the task
                 if play_time - last_log_time >= wait_time or play_time == duration:
 
-                    passed, state = self.video_progress_log(_session, _course, _job, _job_info, _dtoken, duration,
-                                                            int(play_time), _type, headers=headers)
+                    reported_passed, state = self.video_progress_log(
+                        _session, _course, _job, _job_info, _dtoken, duration,
+                        int(play_time), _type, headers=headers,
+                    )
+                    passed = (
+                        play_time >= duration and state == 200
+                        if review_mode
+                        else reported_passed
+                    )
 
                     if play_time == duration and not passed and state == 200:
                         final_report_retry += 1
@@ -1382,7 +1409,7 @@ class Chaoxing:
                             _dtoken = refreshed_meta["dtoken"]
                             duration = int(refreshed_meta["duration"])
                             refreshed_play_time = refreshed_meta.get("playTime")
-                            if refreshed_play_time is not None:
+                            if refreshed_play_time is not None and not review_mode:
                                 play_time = int(refreshed_play_time)
 
                             logger.debug("刷新后的令牌: {}, 持续时间: {}, 播放时间: {}", _dtoken, duration, play_time)

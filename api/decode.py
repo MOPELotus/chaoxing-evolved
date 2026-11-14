@@ -168,7 +168,11 @@ def _extract_points_from_chapter(chapter_unit) -> List[Dict[str, Any]]:
     return point_list
 
 
-def decode_course_card(html_text: str, include_non_task: bool = False) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def decode_course_card(
+    html_text: str,
+    include_non_task: bool = False,
+    review_mode: bool = False,
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """
     解析任务点列表页面，提取任务点信息
     
@@ -218,7 +222,11 @@ def decode_course_card(html_text: str, include_non_task: bool = False) -> Tuple[
         supplemental = frame_properties.get(str(identity))
         if supplemental:
             card["property"] = {**supplemental, **properties}
-    job_list = _process_attachment_cards(cards, include_non_task=include_non_task)
+    job_list = _process_attachment_cards(
+        cards,
+        include_non_task=include_non_task,
+        review_mode=review_mode,
+    )
     if include_non_task:
         pending = {}
         book_readings = {}
@@ -286,7 +294,11 @@ def _extract_job_info(cards_data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _process_attachment_cards(cards: List[Dict[str, Any]], include_non_task: bool = False) -> List[Dict[str, Any]]:
+def _process_attachment_cards(
+    cards: List[Dict[str, Any]],
+    include_non_task: bool = False,
+    review_mode: bool = False,
+) -> List[Dict[str, Any]]:
     """
     处理所有附件任务卡片，强化直播任务识别逻辑
     
@@ -300,14 +312,30 @@ def _process_attachment_cards(cards: List[Dict[str, Any]], include_non_task: boo
 
     for index, card in enumerate(cards):
         properties = card.get("property", {})
+        card_type = str(card.get("type", "")).lower()
+        property_type = str(properties.get("type", "")).lower()
+        resource_type = str(properties.get("resourceType", "")).lower()
+        module = str(properties.get("module", "")).lower()
+        reviewable_media = (
+            card_type == "video"
+            or module in {"insertvideo", "insertaudio"}
+            or "live" in card_type
+            or "live" in property_type
+            or "live" in resource_type
+            or properties.get("liveId") is not None
+            or properties.get("streamName") is not None
+            or properties.get("vdoid") is not None
+        )
+        if review_mode and not reviewable_media:
+            continue
         non_task = not (card.get("job") or card.get("jobid") or properties.get("jobid"))
         start_index = len(job_list)
         # 跳过已通过的任务
-        if card.get("isPassed", False):
+        if card.get("isPassed", False) and not review_mode:
             continue
 
         # 处理无job字段的特殊任务
-        if card.get("job") is None and not include_non_task:
+        if card.get("job") is None and not include_non_task and not review_mode:
             # 尝试识别阅读任务
             read_job = _process_read_task(card)
             if read_job:
@@ -379,6 +407,9 @@ def _process_attachment_cards(cards: List[Dict[str, Any]], include_non_task: boo
         if include_non_task and non_task:
             for job in job_list[start_index:]:
                 job["non_task"] = True
+        if review_mode:
+            for job in job_list[start_index:]:
+                job["review"] = True
 
     return job_list
 
